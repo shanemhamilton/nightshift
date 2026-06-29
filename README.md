@@ -41,6 +41,21 @@ python3 $SK/scaffold_suite.py --suite suite.toml --install       # materialize r
 python3 $SK/optimize_codex_automations.py --fleet suite.toml --require-approved
 ```
 
+### Lifecycle — manage one automation over time, on any agent
+
+```bash
+python3 $SK/lifecycle.py setup  <repo> --agent codex --apply                 # stand up a suite
+python3 $SK/lifecycle.py add    --suite suite.toml --pattern P7 --agent codex --apply   # add one job
+python3 $SK/lifecycle.py update --suite suite.toml --id coverage-ratchet --param coverage_floor=85 --agent codex --apply
+python3 $SK/lifecycle.py remove --suite suite.toml --id code-security --agent codex --apply           # disable (reversible)
+python3 $SK/lifecycle.py remove --suite suite.toml --id code-security --purge --agent codex --apply   # archive + delete
+```
+
+`setup` / `add` / `remove` / `update` all follow one pipeline — mutate the manifest → validate the
+fleet → gate on approval → materialize per agent. Every verb defaults to a dry run; `--apply` is the
+confirmation. `--agent all` targets Codex, Claude, Gemini, and Cursor (cron/cloud agents get the
+config emitted, never applied for you). See [`reference/lifecycle.md`](reference/lifecycle.md).
+
 ## Layout
 
 ```
@@ -52,8 +67,11 @@ scripts/
   discover_agents.py         # read-only cross-agent inventory
   optimize_codex_automations.py  # optimizer + fleet validator
   profile_project.py         # composer: profile + approve
-  scaffold_suite.py          # composer: materialize approved jobs
-reference/                   # contract, pattern library, suite manifest, agent adapters, examples
+  scaffold_suite.py          # composer: materialize approved jobs (Codex)
+  lifecycle.py               # lifecycle front door: setup / add / remove / update
+  agent_materializers.py     # per-agent write/disable/purge + shared template bodies
+  selftest_lifecycle.py      # end-to-end lifecycle checks
+reference/                   # contract, pattern library, suite manifest, lifecycle, agent adapters, examples
 ```
 
 ## Safety

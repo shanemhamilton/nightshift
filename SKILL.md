@@ -9,6 +9,8 @@ Three jobs in one skill, across four agents. **Optimizer mode** hardens *existin
 
 Pick the mode from the request: "harden / review / optimize this job" → optimizer; "what automations should this project have / set up a nightly suite / add a coverage (etc.) automation" → composer; "what automations do I already have / check what's in place" → discovery.
 
+For managing one automation across its whole life — **set up, add, remove, or update** a job on any agent — use the **lifecycle** front door (`scripts/lifecycle.py`), detailed in `reference/lifecycle.md`. The four verbs are the same pipeline (mutate `suite.toml` → validate the fleet → gate on approval → materialize per agent), and they produce jobs that already satisfy the optimizer contract.
+
 ## Installing this skill
 
 Run the self-installer; it detects every agent on the machine and copies the skill into each one's skills directory (`~/.codex/skills`, `~/.claude/skills`, `~/.gemini/skills`; Cursor has no global skills dir and is skipped):
@@ -97,9 +99,28 @@ python3 ~/.codex/skills/automation-optimizer/scripts/optimize_codex_automations.
 
 The eight patterns: P1 coverage-and-quality ratchet, P2 product-value explore/fix/confirm loop, P3 repo-hygiene integrator (the sole merge authority), P4 leftover resolver, P5 collaboration meta-learner, P6 code-simplification ratchet, P7 code-security sweep (escalates high-severity findings to the approval queue), P8 dev-environment self-reflection (keeps CLAUDE.md/AGENTS.md and dev tooling current — instruction edits via the integrator, hooks/CI/settings via the approval queue).
 
+## Lifecycle modes (managing one automation over time)
+
+Full detail in `reference/lifecycle.md`. The front door is `scripts/lifecycle.py`; every verb defaults to a dry run and only writes with `--apply` (running `--apply` is the human confirmation gate). `--agent {codex,claude,gemini,cursor,all}` picks the target; emit-only agents (Gemini cron, Cursor cloud) print the config to apply rather than editing cron or the cloud.
+
+```
+SK=~/.codex/skills/automation-optimizer/scripts
+python3 $SK/lifecycle.py setup  <repo> --agent codex --apply                       # stand up a suite
+python3 $SK/lifecycle.py add    --suite <suite.toml> --pattern P7 --agent codex --apply
+python3 $SK/lifecycle.py update --suite <suite.toml> --id coverage-ratchet --param coverage_floor=85 --agent codex --apply
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --agent codex --apply           # disable (reversible)
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --purge --agent codex --apply   # archive + delete
+```
+
+- **add** is capability-checked: a pattern whose capability is absent is refused with the reason, never guessed. A producer auto-wires to the existing integrator; a second integrator is rejected.
+- **update** re-stamps the fingerprint; a safety-relevant change goes stale and `--apply` is the re-confirmation.
+- **remove** disables by default (reversible) and refuses to retire the sole integrator while producers/janitors depend on it; `--purge` archives state then deletes.
+
 ## Safety rules
 
 - Never deploy, publish, send external messages, change secrets/security/billing, rewrite Git history, or delete project/user data while optimizing automations.
+- **Lifecycle removal is reversible by default** — `remove` disables a job and keeps its files; only `--purge` deletes, and it archives the job's memory/ledgers first. Never delete a job's state without archiving it.
+- **Exactly one merge authority across agents, not just within one.** When the same suite targets multiple agents, only the designated merge agent runs an active integrator; every other agent's integrator is forced to `shadow`.
 - Never store secrets, full logs, screenshots, personal data, or large dumps in automation memory — store fingerprints and metrics only.
 - Treat memory as a hint, not proof. Every run re-checks live repo, tracker, tool, and environment state before acting (this is enforced by the change-detection contract item).
 - Prefer updating existing tracker items over creating duplicates.

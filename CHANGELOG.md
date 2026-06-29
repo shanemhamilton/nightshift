@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-28
+
+### Added
+- **Lifecycle modes** — a new `scripts/lifecycle.py` front door with four verbs so a person can
+  manage a single automation across its whole life, on any agent:
+  - `setup` — profile a project and stand up its whole suite (propose → confirm → install).
+  - `add` — add one pattern (P1..P8) to an existing suite, capability-checked and fleet-validated.
+  - `remove` — retire a job: **disable by default** (reversible), `--purge` archives sidecar state
+    then deletes the registry dir. Honors the "classify, don't delete" safety posture.
+  - `update` — change a job's schedule / params / scope / mode / model; a safety-relevant change
+    re-enters the approval gate (the fingerprint goes stale until re-confirmed).
+- **All four agents executable.** Lifecycle materializes through each adapter's `scheduler`:
+  `native_file` (Codex, Claude) writes the registry files directly; `external_cron` (Gemini) writes
+  the prompt and **emits** the crontab line; `cloud_api` (Cursor) **emits** the config — never
+  editing cron or touching the cloud. New `scripts/agent_materializers.py` holds the per-agent
+  write/disable/purge logic plus the shared template bodies (extracted from `scaffold_suite.py`, so
+  the two share one copy and never drift).
+- **Cross-agent merge-authority guard.** When the same suite targets multiple agents, only the
+  designated merge agent keeps an active integrator; the others get it in `shadow` mode, preserving
+  "exactly one merge authority" across agents, not just within one.
+- **`scripts/selftest_lifecycle.py`** — end-to-end checks for every verb and scheduler type.
+
+### Changed
+- `scaffold_suite.py` now imports its template bodies / Codex emitter from `agent_materializers.py`.
+  Output is byte-identical to v0.2.0 (verified by diff).
+
 ## [0.2.0] — 2026-06-28
 
 ### Added

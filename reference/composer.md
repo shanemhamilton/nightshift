@@ -6,6 +6,8 @@ Composer mode runs when the user asks to add automations, set up a nightly suite
 
 The lifecycle below is implemented by `scripts/profile_project.py` (`profile` and `approve` subcommands), validated by `scripts/optimize_codex_automations.py --fleet`. The script is the source of truth for the mechanics; this doc explains the intent.
 
+> To manage a single job after a suite exists — add one pattern, update a knob, or retire a job on any agent — use the lifecycle verbs in `reference/lifecycle.md` (`scripts/lifecycle.py setup|add|remove|update`). `setup` and `add` are the composer's propose→confirm→install lifecycle wrapped as one command per scope.
+
 ## Principle: adaptive, not targeted
 
 Templates do **not** hardcode project commands. Each job discovers what it needs at runtime and adapts scope to what it finds. A template that can't find a required capability degrades to **propose-only** and records why — it never guesses a command. This keeps one template working across a backend repo, an iOS app, and a mixed workspace without per-project rewrites. The hardcoded specifics a job *learns* over time live in its memory and (durably) in the project's `AGENTS.md`, not in the template.
