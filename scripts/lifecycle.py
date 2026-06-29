@@ -94,16 +94,18 @@ def targets(agent: str) -> list[str]:
 
 
 def materialize_job(agents: list[str], job: dict, *, cwd: str, model: str | None,
-                    apply: bool, home_override: str | None) -> None:
+                    apply: bool, home_override: str | None,
+                    project: str | None = None) -> None:
     """Materialize one job onto each agent, enforcing one real merge authority."""
     merge_agent = agents[0]  # the designated keeper of merge authority
+    name = MAT.naming.display_name(job, project)
     for agent in agents:
         j = dict(job)
         if j.get("merge_authority") and agent != merge_agent:
             j["mode"] = "shadow"  # cross-agent guard: only one active integrator
         res = MAT.materialize(agent, j, cwd=cwd, model=model, apply=apply,
-                              home_override=home_override)
-        _report(agent, j["id"], res)
+                              home_override=home_override, project=project)
+        _report(agent, name, res)
 
 
 def retire_job(agents: list[str], job: dict, *, purge: bool, apply: bool,
@@ -154,6 +156,7 @@ def cmd_setup(args) -> int:
         return 2
     caps = PP.detect(root)
     jobs, skipped = PP.decide(caps)
+    PP.localize(jobs, root.name)  # project-scope ids + stamp display names
     suite = {"project": root.name, "workspace": str(root), "state_dir": "state"}
     print(PP.rationale_text(caps, jobs, skipped) + "\n")
     if validate(suite, jobs) != 0:
@@ -170,7 +173,8 @@ def cmd_setup(args) -> int:
     print(f"\nWrote {suite_path}. Materializing {len(jobs)} job(s):")
     for j in jobs:
         materialize_job(targets(args.agent), j, cwd=suite["workspace"],
-                        model=args.model, apply=True, home_override=args.home_override)
+                        model=args.model, apply=True, home_override=args.home_override,
+                        project=suite.get("project"))
     return 0
 
 
@@ -191,8 +195,9 @@ def cmd_add(args) -> int:
         reason = next((r for pid, r in skipped if pid == args.pattern), "capability missing")
         print(f"Cannot add {args.pattern}: {reason}.")
         return 1
-    if args.id:
-        cand["id"] = args.id
+    project = suite.get("project") or Path(workspace).name
+    cand["id"] = args.id or PP.naming.namespace_id(project, cand["id"])
+    cand["name"] = PP.naming.display_name(cand, project)
     if find_job(jobs, cand["id"]):
         print(f"Job id '{cand['id']}' already exists in the suite.")
         return 1
@@ -213,7 +218,8 @@ def cmd_add(args) -> int:
     save_suite(suite_path, suite, jobs, header="# Job added by lifecycle.py add.")
     print(f"\nAdded '{cand['id']}'. Materializing:")
     materialize_job(targets(args.agent), cand, cwd=workspace, model=args.model,
-                    apply=True, home_override=args.home_override)
+                    apply=True, home_override=args.home_override,
+                    project=project)
     return 0
 
 
@@ -251,7 +257,8 @@ def cmd_update(args) -> int:
     workspace = suite.get("workspace", ".")
     print(f"\nUpdated '{args.id}'. Re-materializing:")
     materialize_job(targets(args.agent), job, cwd=workspace, model=args.model,
-                    apply=True, home_override=args.home_override)
+                    apply=True, home_override=args.home_override,
+                    project=suite.get("project"))
     return 0
 
 

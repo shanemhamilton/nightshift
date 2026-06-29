@@ -82,9 +82,13 @@ def main() -> int:
         check("setup exits 0", rc == 0, out)
         check("suite.toml written", suite_path.is_file())
         autos = codex_home / "automations"
-        check("integrator installed", (autos / "repo-hygiene" / "automation.toml").is_file())
+        integ_toml = autos / "demo-app-repo-hygiene" / "automation.toml"
+        check("integrator installed (project-scoped id)", integ_toml.is_file())
         check("producer sidecars created",
-              (autos / "coverage-ratchet" / "memory.md").is_file())
+              (autos / "demo-app-coverage-ratchet" / "memory.md").is_file())
+        check("display name is project-prefixed",
+              'name = "demo-app ' in integ_toml.read_text(),
+              integ_toml.read_text() if integ_toml.is_file() else "missing")
 
         # fleet + strict must pass on what setup produced
         sp = OPT.fleet(suite_path, require_approved=False)
@@ -102,44 +106,45 @@ def main() -> int:
         check("add P2 refused (no UI driver)", rc == 1, out)
 
         # --- update: change schedule => stale => needs re-approval ---------
-        rc, out = run_lc(["update", "--suite", str(suite_path), "--id", "coverage-ratchet",
+        rc, out = run_lc(["update", "--suite", str(suite_path), "--id", "demo-app-coverage-ratchet",
                           "--schedule", "30 1 * * *", "--agent", "codex"])  # dry run
         check("update dry-run flags re-approval", "re-approval" in out, out)
-        rc, out = run_lc(["update", "--suite", str(suite_path), "--id", "coverage-ratchet",
+        rc, out = run_lc(["update", "--suite", str(suite_path), "--id", "demo-app-coverage-ratchet",
                           "--param", "coverage_floor=85", "--agent", "codex", "--apply",
                           "--home-override", str(codex_home)])
         check("update --apply exits 0", rc == 0, out)
         _, jobs1 = LC.load_suite(suite_path)
-        cr = LC.find_job(jobs1, "coverage-ratchet")
+        cr = LC.find_job(jobs1, "demo-app-coverage-ratchet")
         check("update changed param", cr["params"]["coverage_floor"] == 85)
         check("update re-stamped fingerprint",
               cr.get("approved_fingerprint") == LC.PP.compute_fingerprint(cr))
 
         # --- remove (disable) keeps files, flips status --------------------
-        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "code-security",
+        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "demo-app-code-security",
                           "--agent", "codex", "--apply",
                           "--home-override", str(codex_home)])
         check("remove(disable) exits 0", rc == 0, out)
-        sec_toml = (autos / "code-security" / "automation.toml")
+        sec_toml = (autos / "demo-app-code-security" / "automation.toml")
         check("disabled job dir kept", sec_toml.is_file())
         check("disabled status flipped", 'status = "disabled"' in sec_toml.read_text())
 
         # --- refuse removing the sole integrator while producers remain ----
-        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "repo-hygiene",
+        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "demo-app-repo-hygiene",
                           "--agent", "codex", "--apply",
                           "--home-override", str(codex_home)])
         check("remove integrator refused", rc == 1 and "Refusing" in out, out)
 
         # --- purge archives state then deletes the dir ---------------------
-        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "code-security",
+        rc, out = run_lc(["remove", "--suite", str(suite_path), "--id", "demo-app-code-security",
                           "--purge", "--agent", "codex", "--apply",
                           "--home-override", str(codex_home)])
         check("purge exits 0", rc == 0, out)
-        check("purged dir deleted", not (autos / "code-security").exists())
+        check("purged dir deleted", not (autos / "demo-app-code-security").exists())
         check("purge archived sidecars",
-              any((autos / ".archive").glob("code-security-*/memory.md")))
+              any((autos / ".archive").glob("demo-app-code-security-*/memory.md")))
         _, jobs2 = LC.load_suite(suite_path)
-        check("purge dropped job from manifest", LC.find_job(jobs2, "code-security") is None)
+        check("purge dropped job from manifest",
+              LC.find_job(jobs2, "demo-app-code-security") is None)
 
         # --- claude materialization (native_file, no status field) ---------
         claude_home = root / ".claude"
@@ -148,14 +153,14 @@ def main() -> int:
                           "--home-override", str(claude_home)])
         check("claude setup exits 0", rc == 0, out)
         check("claude SKILL.md written",
-              (claude_home / "scheduled-tasks" / "repo-hygiene" / "SKILL.md").is_file())
+              (claude_home / "scheduled-tasks" / "demo-app-repo-hygiene" / "SKILL.md").is_file())
 
         # claude disable relocates under .disabled/
         rc, out = run_lc(["remove", "--suite", str(root / "claude-suite.toml"),
-                          "--id", "coverage-ratchet", "--agent", "claude", "--apply",
+                          "--id", "demo-app-coverage-ratchet", "--agent", "claude", "--apply",
                           "--home-override", str(claude_home)])
         check("claude disable relocates",
-              (claude_home / "scheduled-tasks" / ".disabled" / "coverage-ratchet").is_dir(),
+              (claude_home / "scheduled-tasks" / ".disabled" / "demo-app-coverage-ratchet").is_dir(),
               out)
 
         # --- gemini emits a cron line, never edits cron --------------------

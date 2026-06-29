@@ -46,10 +46,14 @@ python3 $SK/optimize_codex_automations.py --fleet suite.toml --require-approved
 ```bash
 python3 $SK/lifecycle.py setup  <repo> --agent codex --apply                 # stand up a suite
 python3 $SK/lifecycle.py add    --suite suite.toml --pattern P7 --agent codex --apply   # add one job
-python3 $SK/lifecycle.py update --suite suite.toml --id coverage-ratchet --param coverage_floor=85 --agent codex --apply
-python3 $SK/lifecycle.py remove --suite suite.toml --id code-security --agent codex --apply           # disable (reversible)
-python3 $SK/lifecycle.py remove --suite suite.toml --id code-security --purge --agent codex --apply   # archive + delete
+python3 $SK/lifecycle.py update --suite suite.toml --id myapp-coverage-ratchet --param coverage_floor=85 --agent codex --apply
+python3 $SK/lifecycle.py remove --suite suite.toml --id myapp-code-security --agent codex --apply           # disable (reversible)
+python3 $SK/lifecycle.py remove --suite suite.toml --id myapp-code-security --purge --agent codex --apply   # archive + delete
 ```
+
+Job ids are **project-scoped** (`<project-slug>-<pattern>`, e.g. `myapp-coverage-ratchet`) because
+Codex/Claude/Gemini registries are global — run `discover_agents.py` to list the exact ids, names,
+and workspaces installed.
 
 `setup` / `add` / `remove` / `update` all follow one pipeline — mutate the manifest → validate the
 fleet → gate on approval → materialize per agent. Every verb defaults to a dry run; `--apply` is the

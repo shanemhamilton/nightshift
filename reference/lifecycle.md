@@ -32,13 +32,18 @@ python3 $SK/lifecycle.py add --suite <suite.toml> --pattern P7 --agent codex
 python3 $SK/lifecycle.py add --suite <suite.toml> --pattern P7 --agent codex --apply
 
 # update — change schedule / params / scope / mode / model, re-gated
-python3 $SK/lifecycle.py update --suite <suite.toml> --id coverage-ratchet \
+python3 $SK/lifecycle.py update --suite <suite.toml> --id myapp-coverage-ratchet \
         --param coverage_floor=85 --agent codex --apply
 
 # remove — disable (reversible) by default; --purge to archive + delete
-python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --agent codex --apply
-python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --purge --agent codex --apply
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --agent codex --apply
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --purge --agent codex --apply
 ```
+
+Job ids passed to `update` / `remove` are **project-scoped** (`<project-slug>-<pattern>`, e.g.
+`myapp-coverage-ratchet`) — `setup`/`add` namespace them automatically so the same suite in two
+projects never collides in the global registries. `add` namespaces the candidate id too (override
+with `--id`). Run `discover_agents.py` to list the exact installed ids, names, and workspaces.
 
 - **`add`** runs read-only capability detection (`profile_project.detect`) on the workspace. If the
   pattern's capability is missing (e.g. P2 with no UI driver) it refuses with the reason rather than

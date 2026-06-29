@@ -87,6 +87,8 @@ def main(argv: list[str]) -> int:
     if not cwd:
         print("No cwd: manifest has no [suite].workspace and --cwd not given.")
         return 2
+    project = suite.get("project")
+    name_of = {j.get("id"): MAT.naming.display_name(j, project) for j in jobs}
 
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) \
         if not args.codex_home else Path(args.codex_home).expanduser()
@@ -113,14 +115,15 @@ def main(argv: list[str]) -> int:
         toml_path = job_dir / "automation.toml"
         try:
             prompt = build_prompt(j, str(job_dir))
-            text = emit_job_toml(j, prompt, cwd, args.model)
+            text = emit_job_toml(j, prompt, cwd, args.model, project)
         except (KeyError, ValueError) as e:
             errors.append((jid, str(e)))
             continue
 
         auth = " [merge authority]" if j.get("merge_authority") else ""
-        print(f"  {jid:22} {j.get('phase','?'):11} mode={j.get('mode','active'):7}"
-              f" -> {toml_path}{auth}")
+        print(f"  {name_of[jid]}{auth}")
+        print(f"      id={jid}  {j.get('phase','?')}  mode={j.get('mode','active')}"
+              f"  -> {toml_path}")
         if not args.install:
             continue
 
@@ -145,7 +148,8 @@ def main(argv: list[str]) -> int:
 
     print()
     if args.install:
-        print(f"Installed {len(written)} job(s): {', '.join(written)}")
+        names = ", ".join(f"{name_of[i]} [{i}]" for i in written)
+        print(f"Installed {len(written)} job(s): {names}")
         print(f"Manifest copied to {autos / 'suite.toml'}")
     if errors:
         print(f"Errors ({len(errors)}):")

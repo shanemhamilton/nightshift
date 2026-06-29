@@ -107,10 +107,12 @@ Full detail in `reference/lifecycle.md`. The front door is `scripts/lifecycle.py
 SK=~/.codex/skills/automation-optimizer/scripts
 python3 $SK/lifecycle.py setup  <repo> --agent codex --apply                       # stand up a suite
 python3 $SK/lifecycle.py add    --suite <suite.toml> --pattern P7 --agent codex --apply
-python3 $SK/lifecycle.py update --suite <suite.toml> --id coverage-ratchet --param coverage_floor=85 --agent codex --apply
-python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --agent codex --apply           # disable (reversible)
-python3 $SK/lifecycle.py remove --suite <suite.toml> --id code-security --purge --agent codex --apply   # archive + delete
+python3 $SK/lifecycle.py update --suite <suite.toml> --id myapp-coverage-ratchet --param coverage_floor=85 --agent codex --apply
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --agent codex --apply           # disable (reversible)
+python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --purge --agent codex --apply   # archive + delete
 ```
+
+Job ids are **project-scoped** (`<project-slug>-<pattern>`) so the same suite installed in two projects never collides in the global Codex/Claude/Gemini registries; each job also carries a display `name` like `MyApp Coverage Ratchet`. Use `discover_agents.py` to see the installed ids, names, and workspaces.
 
 - **add** is capability-checked: a pattern whose capability is absent is refused with the reason, never guessed. A producer auto-wires to the existing integrator; a second integrator is rejected.
 - **update** re-stamps the fingerprint; a safety-relevant change goes stale and `--apply` is the re-confirmation.
