@@ -24,6 +24,7 @@ import shutil
 from pathlib import Path
 
 import agent_adapters
+import naming
 from pattern_bodies import BODIES, DEFAULTS
 
 # Share the managed block, sidecar templates, and fingerprint from the optimizer
@@ -67,11 +68,12 @@ def cron_to_rrule(schedule: str) -> str:
     return f"FREQ=DAILY;BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
 
 
-def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None) -> str:
+def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None,
+                    project: str | None = None) -> str:
     """Emit a real Codex automation.toml (version/id/kind/name/prompt/status/rrule/cwds)."""
     if "'''" in prompt:  # literal triple-quote can't contain '''
         raise ValueError(f"{job.get('id')}: prompt contains ''' and can't be emitted")
-    name = job.get("name") or job["id"].replace("-", " ").title()
+    name = naming.display_name(job, project)
     lines = [
         "version = 1",
         f"id = {_q(job['id'])}",
@@ -92,9 +94,9 @@ def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _skill_md(job: dict, prompt: str) -> str:
+def _skill_md(job: dict, prompt: str, project: str | None = None) -> str:
     """A Claude scheduled-task SKILL.md: frontmatter + the prompt the daemon runs."""
-    name = job.get("name") or job["id"].replace("-", " ").title()
+    name = naming.display_name(job, project)
     desc = (f"Recurring {job['template']} automation ({job.get('phase','?')}). "
             f"Cadence set via the Claude scheduler.")
     return (f"---\nname: {job['id']}\ndescription: {desc}\n---\n\n"
@@ -128,7 +130,8 @@ def _root(agent: str, home_override: str | None) -> Path:
 
 
 def materialize(agent: str, job: dict, *, cwd: str, model: str | None = None,
-                apply: bool = False, home_override: str | None = None) -> dict:
+                apply: bool = False, home_override: str | None = None,
+                project: str | None = None) -> dict:
     """Write/emit one job for `agent`. Returns {action, path|emit, notes}."""
     cfg = agent_adapters.get(agent)
     sched = cfg["scheduler"]
@@ -138,7 +141,7 @@ def materialize(agent: str, job: dict, *, cwd: str, model: str | None = None,
     if agent == "codex":
         job_dir = root / jid
         prompt = build_prompt(job, str(job_dir))
-        text = emit_codex_toml(job, prompt, cwd, model)
+        text = emit_codex_toml(job, prompt, cwd, model, project)
         if apply:
             job_dir.mkdir(parents=True, exist_ok=True)
             (job_dir / "automation.toml").write_text(text, encoding="utf-8")
@@ -149,7 +152,7 @@ def materialize(agent: str, job: dict, *, cwd: str, model: str | None = None,
     if agent == "claude":
         job_dir = root / jid
         prompt = build_prompt(job, str(job_dir))
-        text = _skill_md(job, prompt)
+        text = _skill_md(job, prompt, project)
         if apply:
             job_dir.mkdir(parents=True, exist_ok=True)
             (job_dir / "SKILL.md").write_text(text, encoding="utf-8")

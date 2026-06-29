@@ -4,6 +4,8 @@ One manifest per project declares the automation suite and how its members work 
 
 The manifest is *declarative*: it does not contain prompts. Each `[[job]]` points at a template in `pattern-library.md`; the actual prompt for that job (managed block + adaptive body) lives in its own `automation.toml` and is hardened by the optimizer helper as usual.
 
+**Job ids are project-scoped.** Codex/Claude/Gemini registries are global (a Codex job lives at `~/.codex/automations/<id>/`), so the composer namespaces every `id` with a slug of `[suite].project` (`MySkinIQ` → `myskiniq-coverage-ratchet`) to keep two projects' suites from colliding on the same directory. Each job also carries a human `name` (`MySkinIQ Coverage Ratchet`) used as the registry display name. Both `id` and `name` are deliberately *outside* the approval fingerprint, so renaming/namespacing never re-triggers confirmation. A producer's `hands_off_to` references the integrator's namespaced id.
+
 ## Format
 
 ```toml
@@ -14,14 +16,15 @@ nightly_budget_minutes = 180      # global cap across the suite
 quiet_hours = "00:00-06:00"       # optional; informational
 
 [[job]]
-id = "coverage-ratchet"
+id = "myskiniq-coverage-ratchet"  # project-scoped: "<slug>-<pattern>"
+name = "MySkinIQ Coverage Ratchet"  # registry display name
 template = "P1"                   # must be a known pattern id (P1..P8)
 template_version = 2
 phase = "producer"                # producer | integrator | janitor | reflector
 merge_authority = false
 schedule = "0 1 * * *"            # standard 5-field cron
 write_scope = ["tests/**", "backend/**", "ios/**"]
-hands_off_to = "repo-hygiene"     # required for producers: the integrator's id
+hands_off_to = "myskiniq-repo-hygiene"  # required for producers: the integrator's id
 mode = "active"                   # active | shadow
 params = { coverage_floor = 75, quality_mode_when_met = true }
 # approval record (written by the composer's confirm step)
@@ -30,18 +33,20 @@ approved_at = "2026-06-28T21:40:00Z"
 approved_fingerprint = "ao1:9f3c1a2b4d5e"
 
 [[job]]
-id = "product-value-loop"
+id = "myskiniq-product-value-loop"
+name = "MySkinIQ Product Value Loop"
 template = "P2"
 phase = "producer"
 merge_authority = false
 schedule = "0 1 * * *"
 write_scope = ["ios/**"]
-hands_off_to = "repo-hygiene"
+hands_off_to = "myskiniq-repo-hygiene"
 mode = "shadow"
 params = { max_loops = 10 }
 
 [[job]]
-id = "repo-hygiene"
+id = "myskiniq-repo-hygiene"
+name = "MySkinIQ Repo Hygiene"
 template = "P3"
 phase = "integrator"
 merge_authority = true            # EXACTLY ONE job in the suite may set this
@@ -50,7 +55,8 @@ write_scope = ["**"]
 params = { clean_after = true }
 
 [[job]]
-id = "leftover-resolver"
+id = "myskiniq-leftover-resolver"
+name = "MySkinIQ Leftover Resolver"
 template = "P4"
 phase = "janitor"
 merge_authority = false
@@ -58,7 +64,8 @@ schedule = "0 4 * * *"
 write_scope = ["**"]
 
 [[job]]
-id = "collab-meta-learner"
+id = "myskiniq-collab-meta-learner"
+name = "MySkinIQ Collab Meta Learner"
 template = "P5"
 phase = "reflector"
 merge_authority = false
@@ -67,7 +74,8 @@ write_scope = ["AGENTS.md", "**/memory.md"]
 params = { lookback_hours = 24 }
 
 [[job]]
-id = "devenv-reflector"
+id = "myskiniq-devenv-reflector"
+name = "MySkinIQ Devenv Reflector"
 template = "P8"
 phase = "reflector"
 merge_authority = false

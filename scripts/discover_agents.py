@@ -50,6 +50,40 @@ def detect_block(text: str, cfg: dict) -> tuple[bool, int | None]:
     return (True, int(m.group(1)) if m else 0)
 
 
+def suite_index(root: Path) -> dict:
+    """Read <root>/suite.toml if present → {job_id: {project, workspace}}.
+
+    The scaffolder copies the manifest next to the jobs, so this lets discovery
+    label each job with the project/workspace it belongs to — the quickest way to
+    spot a generic or stale job that drifted in from another suite.
+    """
+    if tomllib is None:
+        return {}
+    sp = root / "suite.toml"
+    if not sp.is_file():
+        return {}
+    try:
+        data = tomllib.loads(sp.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+    suite = data.get("suite", {})
+    meta = {"project": suite.get("project"), "workspace": suite.get("workspace")}
+    return {j.get("id"): meta for j in data.get("job", []) if j.get("id")}
+
+
+def codex_meta(job_file: Path) -> dict:
+    """Pull (name, workspace) straight from a Codex automation.toml when possible."""
+    if tomllib is None or job_file.suffix != ".toml":
+        return {}
+    try:
+        data = tomllib.loads(job_file.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+    cwds = data.get("cwds")
+    workspace = cwds[0] if isinstance(cwds, list) and cwds else None
+    return {"name": data.get("name"), "workspace": workspace}
+
+
 def prompt_text_for(job_file: Path, cfg: dict) -> str:
     """Return the text to scan for a protocol block, per agent format."""
     raw = job_file.read_text(encoding="utf-8", errors="replace")
@@ -85,6 +119,7 @@ def scan_agent(agent: str, cfg: dict, home: Path) -> dict:
                        f"({'cron-driven' if cfg['scheduler']=='external_cron' else 'none found'})")
         return out
 
+    idx = suite_index(root)
     job_file_name = Path(cfg["automations_glob"]).name if cfg["automations_glob"] else None
     for d in sorted(root.iterdir()):
         if not d.is_dir():
@@ -97,8 +132,15 @@ def scan_agent(agent: str, cfg: dict, home: Path) -> dict:
             continue
         has, ver = detect_block(prompt_text_for(jf, cfg), cfg)
         missing_sidecars = [s for s in cfg["sidecars"] if not (d / s).is_file()]
-        out["jobs"].append({"id": d.name, "block": has, "version": ver,
-                            "orphan": False, "missing_sidecars": missing_sidecars})
+        meta = idx.get(d.name, {})
+        cmeta = codex_meta(jf) if agent == "codex" else {}
+        out["jobs"].append({
+            "id": d.name, "block": has, "version": ver, "orphan": False,
+            "missing_sidecars": missing_sidecars,
+            "project": meta.get("project"),
+            "workspace": cmeta.get("workspace") or meta.get("workspace"),
+            "name": cmeta.get("name"),
+        })
     return out
 
 
@@ -131,6 +173,17 @@ def main(argv: list[str]) -> int:
                     sc = "" if not j["missing_sidecars"] else \
                         f"  missing: {', '.join(j['missing_sidecars'])}"
                     print(f"  - {j['id']:42} {blk}{sc}")
+                    meta = []
+                    if j.get("project"):
+                        meta.append(f"project={j['project']}")
+                    if j.get("workspace"):
+                        meta.append(f"ws={j['workspace']}")
+                    if j.get("name") and j["name"] != j["id"]:
+                        meta.append(f"name={j['name']}")
+                    if meta:
+                        print(f"      {'  '.join(meta)}")
+                    else:
+                        print("      (no suite metadata — generic/standalone job)")
         elif not r["note"]:
             print("  (none)")
         if r["canonical"]:

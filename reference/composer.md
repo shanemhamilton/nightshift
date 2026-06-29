@@ -29,6 +29,8 @@ Detect, never assume. Record findings as evidence in the proposal:
 ### 2. Propose (evidence-based, no writes to active config)
 Emit a draft `suite.toml` plus a plain-English rationale: which patterns fit, which were skipped and why (e.g., "product-value-loop skipped — no iOS simulator detected"), the phase ordering, and which single job holds merge authority. Anything proposed that can write to `main` is flagged.
 
+Every proposed job id is **project-scoped** — `profile_project.py` prefixes it with a slug of `[suite].project` (`SkinCrafter` → `skincrafter-product-value-loop`) and stamps a human `name` (`SkinCrafter Product Value Loop`) — because Codex/Claude/Gemini automation registries are global and generic ids would collide or overwrite across projects. Producer `hands_off_to` is namespaced in lockstep; id/name stay outside the approval fingerprint so this never re-triggers confirmation.
+
 ### 3. Confirm-once (human gate, first time only)
 The user approves the proposal. On approval, write an **approval record** into the manifest for each job:
 ```toml

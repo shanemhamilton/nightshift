@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-28
+
+### Changed
+- **Project-scoped automation ids and display names.** Codex/Claude/Gemini registries are global
+  (`~/.codex/automations/<id>/`), so the composer's old generic ids (`product-value-loop`) made two
+  projects collide and overwrite each other. `profile_project.py` now namespaces every job id with a
+  slug of `[suite].project` (`SkinCrafter` → `skincrafter-product-value-loop`) and stamps a human
+  `name` (`SkinCrafter Product Value Loop`); producer `hands_off_to` is rewritten in lockstep.
+  `lifecycle.py setup`/`add` apply the same namespacing. Ids/names stay outside the approval
+  fingerprint, so this never re-triggers confirmation.
+- **Name fallback is project-aware.** `agent_materializers.py` (used by `scaffold_suite.py` and
+  `lifecycle.py`) defaults a job's registry name to `"{project} {pattern title}"` when no explicit
+  `name` is set, instead of a bare id-derived title.
+- **Discovery surfaces project/workspace/name.** `discover_agents.py` reads the installed
+  `automation.toml` (and any co-located `suite.toml`) and prints `project=/ws=/name=` next to each
+  job — flagging metadata-less generic or stale jobs with `(no suite metadata)`.
+- **Install summary prints display names.** `scaffold_suite.py` leads each line with the
+  user-visible name and lists names (not just ids) in its install summary.
+
+### Added
+- **`scripts/naming.py`** — single source for `slugify` / `namespace_id` / `base_title` /
+  `display_name`, imported across the composer, materializer, discovery, and lifecycle scripts so the
+  id/name rules never drift.
+
 ## [0.3.0] — 2026-06-28
 
 ### Added
