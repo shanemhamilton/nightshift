@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.bak
+*.bak.*
+.DS_Store
+
+# Internal design-review artifact — not part of the public skill
+RECOMMENDATIONS.md
