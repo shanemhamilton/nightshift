@@ -18,7 +18,7 @@ quiet_hours = "00:00-06:00"       # optional; informational
 [[job]]
 id = "myskiniq-coverage-ratchet"  # project-scoped: "<slug>-<pattern>"
 name = "MySkinIQ Coverage Ratchet"  # registry display name
-template = "P1"                   # must be a known pattern id (P1..P8)
+template = "P1"                   # must be a known pattern id (P1..P9)
 template_version = 2
 phase = "producer"                # producer | integrator | janitor | reflector
 merge_authority = false
@@ -94,7 +94,7 @@ A manifest is valid only if all of these hold:
 3. **Producers hand off.** Every `producer` has `merge_authority = false` and a `hands_off_to` that names an existing integrator job.
 4. **Consumers exist.** If any producer exists, an integrator must exist. If a janitor exists, an integrator must exist (the janitor depends on it).
 5. **Phase ordering.** Schedules must run in DAG order: producer ≤ integrator ≤ janitor ≤ reflector, by cron hour. (Unparseable cron → ordering check skipped with a note.)
-6. **Known templates.** Every `job.template` is one of P1..P8.
+6. **Known templates.** Every `job.template` is one of P1..P9. (P9, the cross-project approval digest, is fleet-global — installed once and not part of a per-project suite.)
 7. **Unique ids.** Job ids are unique within the suite.
 
 ## Approval / fingerprint reporting

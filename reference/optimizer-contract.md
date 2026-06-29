@@ -8,7 +8,7 @@ Every recurring job must satisfy these items. Each line states the control and t
 3. **Observability metrics** — each ledger entry records outcome, runtime, items touched, and retries, exposing drift (slowing runs, rising failures) that a pass/fail log hides. Store metrics, never logs/dumps.
 
 ## Safe execution
-4. **Concurrency lock** — refuse to run if another instance holds the lock (`state/.lock`); prevents two runs racing on the same repo/tracker.
+4. **Concurrency lock (atomic acquire + lease)** — acquire `.automation.lock` with an atomic create that *fails if it already exists* (`mkdir` / `O_EXCL` / `set -o noclobber`), never read-then-write. Record a run token, PID, host, and `lease_until` (start + max wall-clock). If the acquire fails, **DEFER** (no-op) rather than run in parallel; reclaim only a lock whose recorded PID is dead **and** whose lease has expired, confirming sole ownership by reading the lock back after re-acquiring. Release only a lock that still holds your token. This closes the check-then-replace race where two runs each declared the other "stale" and both proceeded.
 5. **Idempotency guarantee** — an interrupted-then-retried run must not double-create, double-comment, or double-merge. Enforced via dedupe-by-fingerprint + the ledger. (The lock prevents *parallel* runs; this covers *sequential* reruns.)
 6. **Tool/environment preflight** — verify required tools, network, and working dirs are available before acting; fail fast with a clear reason rather than half-running.
 7. **Least-privilege credential preflight** — confirm required credentials/scopes are present without printing them; refuse to run if missing.
@@ -28,12 +28,12 @@ Every recurring job must satisfy these items. Each line states the control and t
 ## Evidence and change control
 16. **Evidence bundle rules** — capture the minimal proof a change is safe (test names, diffs, ids) — not full logs or screenshots.
 17. **Rollback note** — for any state-changing action, the ledger entry records how to undo it (branch, issue id, commit sha).
-18. **Human-approval queue** — `state/approval-queue.md` holds actions that exceed the safe boundary (deploy, secrets, history rewrite, external sends, deletes) for a human to approve.
+18. **Human-approval queue (structured)** — `human-approval.md` holds actions beyond the safe boundary (deploy, secrets, history rewrite, external sends, deletes) for a human. Each item is structured — a `## <ask>` heading plus `risk` / `suggested_default` / `action` / `first_seen` / `evidence` — so the cross-project daily digest (pattern **P9**) can aggregate every project's pending decisions into one inbox and bucket them safe-to-batch vs needs-judgment.
 
 ## Agentic execution and closeout
 19. **Agentic execution for non-trivial runs** — split inventory, implementation, verification/review, and integration across specialist agents/subagents when the tool supports it.
-20. **Verified safe-merge bias** — when project rules allow, a completed safe fix is pushed, synced, and merged to the default branch rather than left stranded; otherwise it goes to the approval queue with a reason.
-21. **Safe closeout & report** — end every run by writing the ledger entry, updating memory fingerprints, releasing the lock, and emitting the plain-English report.
+20. **Scope-gated safe-merge lane** — the integrator auto-merges a completed fix to the default branch when required gates pass, the diff stays within the producer's `write_scope`, and it touches no production-config/secrets/migration/deploy/CI/auth/billing/external surface. Agent-local tool metadata (`.serena/`, `.beads/issues.jsonl`) never counts as a dirty-worktree blocker, and screenshot/visual proof is required only for user-visible UI changes. Anything outside the lane is pushed as a branch and queued with a reason rather than stranded silently.
+21. **Safe closeout & report** — end every run by writing the ledger entry, updating memory fingerprints, releasing the lock (only if it still holds this run's token), and emitting the plain-English report.
 
 ## Hygiene
 22. **Versioned managed block, no duplicates** — exactly one current managed block (with a `VERSION` marker) sits before the task-specific instructions; older/duplicate optimizer blocks are removed on upgrade.

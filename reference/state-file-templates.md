@@ -71,10 +71,16 @@ Do not re-report or auto-fix these.
 - <test or check id> — <why it's expected> — <date noted>
 ```
 
-## approval-queue.md
+## human-approval.md  (live name; was `approval-queue.md`)
 ```markdown
-# Approval queue — <automation id>
+# Human approval queue — <automation id>
 Unsafe actions awaiting a human. Nothing here is auto-executed.
 
-- [ ] <action> — <why it needs approval> — <evidence/ids> — queued <ISO timestamp>
+## <one-line ask>
+- risk: low|medium|high
+- suggested_default: <what you would do absent other input>
+- action: <exact command / branch / ticket id to act on>
+- first_seen: <ISO date>
+- evidence: <ids / paths, never secrets>
 ```
+The structured fields let the cross-project daily digest (pattern **P9**, `approval_digest.py`) aggregate every project's pending decisions into one `~/.codex/DAILY-APPROVALS.md`, bucketed safe-to-batch vs needs-judgment.

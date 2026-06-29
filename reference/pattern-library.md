@@ -135,6 +135,17 @@ Runs last, alongside P5. Where P5 learns how the agent *collaborates* with the u
 
 ---
 
+## P9 — cross-project approval digest  (phase: reflector, merge_authority: false, FLEET-GLOBAL)
+Installed once for the whole fleet, not per project. Runs after every project's reflectors and collapses the scattered `human-approval.md` queues into one morning inbox, so the operator has a single low-effort place to clear decisions across all projects.
+
+- **requires:** nothing project-specific — it reads `~/.codex/automations/*/human-approval.md` (and other agents' queues via the adapter table). Read-only over every queue; it never mutates one.
+- **degrades:** if no queue has pending items, it writes an empty digest and notifies nothing.
+- **engine:** `scripts/approval_digest.py` — dedupes, ranks by age, buckets "safe to batch-approve" vs "needs judgment" (unknown risk stays in needs-judgment, conservatively), filters self-resolved closure notes (surfacing the count), and writes `~/.codex/DAILY-APPROVALS.md`.
+- **delivery:** optional local macOS notification (`--notify-macos`); external email/Slack (`--channel`) stays OFF unless a destination is configured AND `AO_DIGEST_EXTERNAL_OPTIN=1`, because sending crosses the external-send boundary.
+- **adaptive body:** run the engine, sanity-check counts against the live queues, surface malformed items under "Needs cleanup", and never approve or act — surfacing is the whole job.
+
+---
+
 ## How they compose
 
 Default healthy DAG when all eight apply:

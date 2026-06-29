@@ -25,6 +25,7 @@ DEFAULTS = {
     "P6": {"max_changesets": 5},
     "P7": {"auto_fix_max_severity": "low", "escalate_at_or_above": "high", "max_units": 5},
     "P8": {"lookback_hours": 24, "max_edits": 3, "config_changes_need_approval": True},
+    "P9": {},  # cross-project digest: no tunable caps; channels are flags on the script
 }
 
 BODIES = {
@@ -87,4 +88,12 @@ Runs last, alongside P5. Goal: keep THIS agent's instruction files and dev tooli
 3. Route higher-risk dev-env changes to the approval queue WITH the exact diff: new/changed hooks, lint/format/editorconfig rules, CI steps, settings or permissions, or a new skill. Never edit hooks/settings/CI silently.
 4. Bias to no change: at most {max_edits} high-signal changes this run; everything else is a memory note or a tracker ticket, with the reason recorded. Like P5, "use the night well" means scanning more signals thoroughly, NOT making more edits — the low cap is intentional. Never store secret values; reference signals by fingerprint.
 5. Coordinate with P5: interaction-style lessons stay with P5 (memory); environment/config lessons are yours (instructions + approval-queued tooling).""",
+
+"P9": """## Task — cross-project approval digest (P9, reflector, cross-project)
+Runs last, after every project's reflectors. Goal: collapse all pending human decisions across EVERY automation into one low-effort morning inbox. You hold NO merge authority and edit NO project repo.
+1. Run the deterministic aggregator: `python3 ~/.codex/skills/automation-optimizer/scripts/approval_digest.py --write --notify-macos`. It scans every agent's automations (Codex, Claude, ...), parses each `human-approval.md`, dedupes, ranks by age, buckets safe-to-batch vs needs-judgment, and writes `~/.codex/DAILY-APPROVALS.md`. It is READ-ONLY over the queues — never mutate a project's `human-approval.md` yourself.
+2. Read the generated digest. Sanity-check it against the live queues: confirm the counts match, every item carries an action, and nothing high-risk was mis-bucketed as safe-to-batch. If the script flagged malformed items, leave them under its `Needs cleanup` section — do not guess their risk.
+3. Do NOT approve, merge, deploy, or act on any item — surfacing is your whole job; the human decides. The only writes you make are the digest file and, if configured, a local notification.
+4. External delivery (email/Slack) stays OFF unless the operator has configured a channel AND approved it. If a channel is configured, pass `--channel <name>` and let the script enforce the opt-in; never send externally on your own initiative.
+5. Evidence = the digest path, item counts per bucket, and the notification status. Keep memory to a one-line trend (counts over time), never the decisions themselves.""",
 }
