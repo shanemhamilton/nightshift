@@ -1,6 +1,6 @@
 # Adaptive Pattern Library
 
-Five reusable, capability-driven automation patterns. They are written in terms of *discover X, then act*, never *run a fixed command*, so one template adapts across backend, iOS, and mixed projects. Each carries the managed optimizer block (`optimizer-block.md`) above its task body and is wired into a suite by `suite-manifest.md`.
+Eight reusable, capability-driven automation patterns. They are written in terms of *discover X, then act*, never *run a fixed command*, so one template adapts across backend, iOS, and mixed projects. Each carries the managed optimizer block (`optimizer-block.md`) above its task body and is wired into a suite by `suite-manifest.md`.
 
 Conventions used below:
 - **phase** — producer | integrator | janitor | reflector (defines run order; see manifest).
@@ -117,11 +117,24 @@ Find and remediate security issues; the most safety-gated producer after P2.
   - Never weaken a security gate to make a scan pass. Evidence = finding ids +
     severity + remediation, with secrets redacted.
 
+## P8 — dev-environment self-reflection  (phase: reflector, merge_authority: false)
+Runs last, alongside P5. Where P5 learns how the agent *collaborates* with the user, P8 reflects on the agent's *operating environment* — it keeps the instruction files and dev tooling current with how the project is actually worked.
+
+- **requires:** read access to the last ~24h of signals (commits, merged/blocked PRs, CI results, review comments, run ledgers) and at least one canonical instruction file or dev-env config present.
+- **degrades:** if nothing recurring is actionable, no-op — biased hard toward *no change*. Sensitive, execution-shaping config (hooks, settings/permissions, CI) is never edited directly; it is proposed to the approval queue.
+- **params:** `lookback_hours = 24`, `max_edits = 3`, `config_changes_need_approval = true`.
+- **adaptive body:**
+  - Gather the day's signals and look for *durable, recurring* friction whose real fix lives in the environment: a convention people keep restating, a guardrail that keeps catching the same class of mistake, a stale command in the docs, a repeated task with no skill/command, a gap in CI.
+  - **Edit the canonical instruction file for this agent** — `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` / `.cursor/rules` per the adapter table — *surgically*: add or correct a single rule, never rewrite the file. Instruction edits go through the integrator's gate like any other change.
+  - **Route higher-risk dev-env changes to the approval queue (AO-18)** with the exact diff: new/changed hooks, lint/format/editorconfig rules, CI steps, settings or permissions, or a new skill. These shape execution, so a human confirms them — never edit hooks/settings/CI silently.
+  - **Bias to no change.** At most `max_edits` high-signal changes per run; everything else becomes a memory note or a tracker ticket, with the reason recorded. Never store secret values; reference signals by fingerprint (AO-16).
+  - Coordinate with P5: interaction-style lessons stay with P5 (→ memory); environment/config lessons are P8's (→ instruction files + approval-queued tooling). If a file is already correct, leave it.
+
 ---
 
 ## How they compose
 
-Default healthy DAG when all five apply:
+Default healthy DAG when all eight apply:
 
 ```
 producers (P1 coverage, P2 product-value, P6 simplification, P7 security)
@@ -133,9 +146,10 @@ integrator (P3 hygiene)  ← the ONLY job that merges to main
 janitor (P4 leftovers)   ← cleans what producers/integrator left
         │
         ▼
-reflector (P5 meta-learn) ← reviews the whole night, biases to no change
+reflectors (P5 collaboration → memory, P8 dev-environment → instructions/config)
+        ← run last, review the whole night, bias to no change
 ```
 
-Producers never merge; they produce. The integrator is the single merge authority. The janitor depends on the producers and integrator finishing. The reflector runs last. The composer omits any pattern whose capabilities aren't present (e.g., P2 on a backend-only repo, P7 with no scanner) and still produces a valid smaller suite.
+Producers never merge; they produce. The integrator is the single merge authority. The janitor depends on the producers and integrator finishing. The two reflectors run last and bias to no change — P5 tunes collaboration into memory, P8 keeps the instruction files and tooling current (instruction edits through the integrator's gate, execution-shaping config to the approval queue). The composer omits any pattern whose capabilities aren't present (e.g., P2 on a backend-only repo, P7 with no scanner) and still produces a valid smaller suite.
 
 All four producers can share the same producer window; they don't conflict because none of them merge — they only open branches and tickets that the single integrator later reconciles. P7's high-severity findings and P6's unprovable simplifications route to the approval queue rather than the integrator.

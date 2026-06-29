@@ -15,7 +15,7 @@ quiet_hours = "00:00-06:00"       # optional; informational
 
 [[job]]
 id = "coverage-ratchet"
-template = "P1"                   # must be a known pattern id (P1..P7)
+template = "P1"                   # must be a known pattern id (P1..P8)
 template_version = 2
 phase = "producer"                # producer | integrator | janitor | reflector
 merge_authority = false
@@ -65,6 +65,15 @@ merge_authority = false
 schedule = "0 5 * * *"
 write_scope = ["AGENTS.md", "**/memory.md"]
 params = { lookback_hours = 24 }
+
+[[job]]
+id = "devenv-reflector"
+template = "P8"
+phase = "reflector"
+merge_authority = false
+schedule = "0 5 * * *"
+write_scope = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursor/rules", ".claude/**", "**/memory.md"]
+params = { lookback_hours = 24, max_edits = 3 }
 ```
 
 ## Fleet rules (enforced by `optimize_codex_automations.py --fleet`)
@@ -76,7 +85,7 @@ A manifest is valid only if all of these hold:
 3. **Producers hand off.** Every `producer` has `merge_authority = false` and a `hands_off_to` that names an existing integrator job.
 4. **Consumers exist.** If any producer exists, an integrator must exist. If a janitor exists, an integrator must exist (the janitor depends on it).
 5. **Phase ordering.** Schedules must run in DAG order: producer ≤ integrator ≤ janitor ≤ reflector, by cron hour. (Unparseable cron → ordering check skipped with a note.)
-6. **Known templates.** Every `job.template` is one of P1..P7.
+6. **Known templates.** Every `job.template` is one of P1..P8.
 7. **Unique ids.** Job ids are unique within the suite.
 
 ## Approval / fingerprint reporting

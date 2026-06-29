@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **P8 — dev-environment self-reflection** pattern (reflector phase). A daily routine that
+  reviews the day's signals (commits, PRs, CI results, review comments, run ledgers) and keeps
+  the agent's environment current: surgical edits to the canonical instruction file
+  (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`/`.cursor/rules`) routed through the integrator's gate, and
+  execution-shaping config (hooks, CI, lint/format, settings/permissions, new skills) proposed to
+  the human-approval queue rather than edited directly. Composed automatically alongside P5; both
+  reflectors bias hard toward no change. The pattern library is now 8 patterns (P1..P8).
+
 ## [0.1.0] — 2026-06-28
 
 Initial public release.

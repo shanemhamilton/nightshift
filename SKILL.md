@@ -67,7 +67,7 @@ Use when the user wants new automations rather than hardening existing ones. Ful
 
 1. **Profile (read-only).** Detect capabilities, never assume them: default branch + protection, test runners, the "gates pass" signal, the tracker, platform capabilities (e.g. iOS simulator), security scanners, complexity signals, and any existing automations. Run the optimizer audit first so you don't propose a duplicate.
 
-2. **Propose.** From the seven patterns, select only those whose capabilities are present and draft a `suite.toml` plus a plain-English rationale: which patterns fit, which were skipped and why, the phase ordering, and which single job holds merge authority. Flag anything that can write to `main`.
+2. **Propose.** From the eight patterns, select only those whose capabilities are present and draft a `suite.toml` plus a plain-English rationale: which patterns fit, which were skipped and why, the phase ordering, and which single job holds merge authority. Flag anything that can write to `main`.
 
 3. **Confirm once.** The user approves; write an approval record (`approved_fingerprint`) per job. This is the suite's one mandatory human gate.
 
@@ -95,7 +95,7 @@ python3 ~/.codex/skills/automation-optimizer/scripts/optimize_codex_automations.
 
 **Principle — adaptive, not targeted:** templates discover their commands at runtime and degrade to propose-only when a capability is missing; they never hardcode or guess project commands. **Fleet rule — one merge authority:** exactly one job (the integrator) merges to `main` when any producer/janitor exists; producers hand off via branches + tracker tickets. For new jobs that can merge, start in `mode = "shadow"` for the first few runs.
 
-The seven patterns: P1 coverage-and-quality ratchet, P2 product-value explore/fix/confirm loop, P3 repo-hygiene integrator (the sole merge authority), P4 leftover resolver, P5 collaboration meta-learner, P6 code-simplification ratchet, P7 code-security sweep (escalates high-severity findings to the approval queue).
+The eight patterns: P1 coverage-and-quality ratchet, P2 product-value explore/fix/confirm loop, P3 repo-hygiene integrator (the sole merge authority), P4 leftover resolver, P5 collaboration meta-learner, P6 code-simplification ratchet, P7 code-security sweep (escalates high-severity findings to the approval queue), P8 dev-environment self-reflection (keeps CLAUDE.md/AGENTS.md and dev tooling current — instruction edits via the integrator, hooks/CI/settings via the approval queue).
 
 ## Safety rules
 

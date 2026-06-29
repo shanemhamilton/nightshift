@@ -52,6 +52,7 @@ DEFAULTS = {
     "P5": {"lookback_hours": 24},
     "P6": {"max_changesets": 5},
     "P7": {"auto_fix_max_severity": "low", "escalate_at_or_above": "high"},
+    "P8": {"lookback_hours": 24, "max_edits": 3, "config_changes_need_approval": True},
 }
 
 # Adaptive task bodies — runtime operating instructions, parameterized. They
@@ -107,6 +108,14 @@ Goal: find and remediate security issues. You do NOT merge; hand safe fixes to '
 3. Anything at or above '{escalate_at_or_above}', or touching auth, secrets, crypto, or security config, goes to the approval queue — NEVER auto-merged, even if gates pass.
 4. Leaked secrets: record location and type ONLY, never the value; open a high-priority ticket and queue rotation for a human.
 5. Never weaken a security gate to make a scan pass. Evidence = finding ids + severity + remediation, secrets redacted.""",
+
+"P8": """## Task — dev-environment self-reflection (P8, reflector)
+Runs last, alongside P5. Goal: keep THIS agent's instruction files and dev tooling current with how the project is actually worked. Bias hard toward NO change.
+1. Gather the last {lookback_hours}h of signals: commits, merged/blocked PRs, CI results, review comments, and run ledgers. Look for DURABLE, recurring friction whose real fix lives in the environment (a restated convention, a guardrail that keeps catching the same mistake, a stale command in the docs, a repeated task with no skill/command, a CI gap).
+2. Edit THIS agent's canonical instruction file (CLAUDE.md / AGENTS.md / GEMINI.md / .cursor/rules) SURGICALLY — add or correct ONE rule, never rewrite the file. Instruction edits go through the integrator's gate.
+3. Route higher-risk dev-env changes to the approval queue WITH the exact diff: new/changed hooks, lint/format/editorconfig rules, CI steps, settings or permissions, or a new skill. Never edit hooks/settings/CI silently.
+4. Bias to no change: at most {max_edits} high-signal changes this run; everything else is a memory note or a tracker ticket, with the reason recorded. Never store secret values; reference signals by fingerprint.
+5. Coordinate with P5: interaction-style lessons stay with P5 (memory); environment/config lessons are yours (instructions + approval-queued tooling).""",
 }
 
 

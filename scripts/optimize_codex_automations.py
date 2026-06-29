@@ -153,7 +153,7 @@ REQUIRED_SIDECARS = list(SIDECARS.keys())
 INACTIVE_STATUSES = {"disabled", "archived", "paused", "inactive", "off"}
 
 # --- Fleet / suite constants -------------------------------------------------
-KNOWN_TEMPLATES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7"}
+KNOWN_TEMPLATES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"}
 PHASE_RANK = {"producer": 0, "integrator": 1, "janitor": 2, "reflector": 3}
 FINGERPRINT_FIELDS = (
     "template", "template_version", "merge_authority",
@@ -472,7 +472,7 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
     for j in jobs:
         if j.get("template") not in KNOWN_TEMPLATES:
             errors.append(f"{j.get('id')}: unknown template "
-                          f"{j.get('template')!r} (expected P1..P7)")
+                          f"{j.get('template')!r} (expected P1..P8)")
 
     # Rule 1 + 2: at most one merge authority; exactly one when any producer or
     # janitor exists; the authority (if any) must be the integrator; and every

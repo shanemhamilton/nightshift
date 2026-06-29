@@ -235,10 +235,14 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
     src = caps["source_scopes"]
 
     if not caps["git"]:
-        # Without git there is no branch to merge/clean; only the reflector is safe.
+        # Without git there is no branch to merge/clean; only the reflectors are safe.
         jobs.append(_job("collab-meta-learner", "P5", "reflector",
                          write_scope=["AGENTS.md", "**/memory.md"],
                          params={"lookback_hours": 24}))
+        jobs.append(_job("devenv-reflector", "P8", "reflector",
+                         write_scope=["CLAUDE.md", "AGENTS.md", "GEMINI.md",
+                                      ".cursor/rules", ".claude/**", "**/memory.md"],
+                         params={"lookback_hours": 24, "max_edits": 3}))
         for pid, name in [("P1", "coverage-and-quality ratchet"),
                           ("P2", "product-value loop"), ("P3", "repo-hygiene integrator"),
                           ("P4", "leftover resolver"), ("P6", "code-simplification"),
@@ -299,10 +303,15 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
         skipped.append(("P4", "leftover resolver: no producers in this suite, so there are "
                               "no producer leftovers to resolve yet"))
 
-    # reflector always
+    # reflectors always: P5 tunes collaboration → memory; P8 keeps the
+    # instruction files + dev tooling current → instructions / approval-queued config.
     jobs.append(_job("collab-meta-learner", "P5", "reflector",
                      write_scope=["AGENTS.md", "**/memory.md"],
                      params={"lookback_hours": 24}))
+    jobs.append(_job("devenv-reflector", "P8", "reflector",
+                     write_scope=["CLAUDE.md", "AGENTS.md", "GEMINI.md",
+                                  ".cursor/rules", ".claude/**", "**/memory.md"],
+                     params={"lookback_hours": 24, "max_edits": 3}))
     return jobs, skipped
 
 

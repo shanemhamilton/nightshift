@@ -34,5 +34,6 @@ The skill supports four coding agents. Each stores recurring automations and can
 - **Optimizer** edits file-based registries in place (Codex now; Claude SKILL.md by the same protocol). For cron/cloud agents it hardens the prompt and reports scheduler changes for you to apply.
 - **Composer/scaffolder** writes file-based jobs (`--install`) and, for cron/cloud agents, writes the prompt files and emits the exact crontab line or cloud payload.
 
-## Canonical-instructions file by agent (used by P5 meta-learner)
+## Canonical-instructions file by agent (used by P5 meta-learner and P8 dev-environment reflector)
 `codex → AGENTS.md`, `claude → CLAUDE.md`, `gemini → GEMINI.md`, `cursor → .cursor/rules`.
+P8 edits this file surgically for durable environment lessons; execution-shaping config it finds nearby (hooks, settings/permissions, CI under `.github/workflows`, lint/format config) is proposed to the approval queue, never edited directly.
