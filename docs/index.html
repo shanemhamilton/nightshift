@@ -195,6 +195,7 @@ python3 scripts/install_skill.py</pre>
         <p>Read-only inventory of every automation already installed across each agent on the machine &mdash; with protocol-compliance flags.</p>
         <span class="tag">&ldquo;what do I have?&rdquo;</span></div>
     </div>
+    <p class="lead" style="margin-top:28px">And a <strong>lifecycle</strong> front door &mdash; <code>setup</code>, <code>add</code>, <code>remove</code>, <code>update</code> &mdash; to manage one automation over time on any agent. Every verb is the same pipeline (mutate the manifest &rarr; validate the fleet &rarr; gate on approval &rarr; materialize per agent); <code>remove</code> disables reversibly by default, and exactly one merge authority is preserved even across agents.</p>
   </section>
 
   <section>
