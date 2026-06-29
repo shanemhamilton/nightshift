@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-29
+
+Hardening pass driven by an overnight fleet audit (lock collisions, schedule drift, near-zero
+merges to main, scattered approvals).
+
+### Added
+- **P9 — cross-project approval digest (fleet-global pattern).** A new ninth pattern plus its
+  deterministic engine `scripts/approval_digest.py`. It reads every automation's
+  `human-approval.md` across all agents (read-only), dedupes, ranks by age, filters self-resolved
+  closure notes, and buckets items into "safe to batch-approve" vs "needs judgment" (unknown risk
+  stays in needs-judgment), writing one `~/.codex/DAILY-APPROVALS.md`. Optional local macOS
+  notification; external email/Slack stays OFF unless a destination is configured **and**
+  `AO_DIGEST_EXTERNAL_OPTIN=1`. Installed once for the whole fleet, not per project.
+- **Structured approval-queue items.** `human-approval.md` items now carry `risk` /
+  `suggested_default` / `action` / `first_seen` / `evidence`, so the digest can bucket and pre-fill
+  them.
+
+### Changed
+- **Atomic lock acquisition (managed protocol v3 → v4).** Start-of-run step 1 went from
+  check-then-replace (which let two same-minute runs each declare the other "stale" and run in
+  parallel) to **atomic acquire-or-defer**: create the lock with an operation that fails if it
+  exists (`mkdir` / `O_EXCL` / noclobber), record a run token + PID + `lease_until`, **defer** (no-op)
+  when the lock is held, and reclaim only a provably abandoned lock (dead PID **and** expired lease)
+  with a read-back ownership check. Release only a lock that still holds this run's token.
+- **Scope-gated safe-merge lane.** The integrator may auto-merge to the default branch only when
+  gates pass, the diff stays within the producer's `write_scope`, and it touches no
+  production-config/secrets/migration/deploy/CI/auth/billing/external surface. Agent-local tool
+  metadata (`.serena/`, `.beads/issues.jsonl`) no longer counts as a dirty-worktree blocker, and
+  screenshot/visual proof is required only for user-visible UI changes — removing the two false
+  blockers that stranded safe work overnight.
+- **Schedule de-clustering (generator).** `profile_project.py` now staggers cron minutes per job
+  (`base(project) + i*13 mod 60`) so jobs touching the same repos never share a trigger minute;
+  phase hours are preserved so fleet phase-ordering still holds. Existing installed jobs keep their
+  schedules until regenerated (the v4 lock makes their current collisions defer safely).
+- Reference docs updated in lockstep: `optimizer-contract.md` (items 4/18/20/21),
+  `state-file-templates.md`, `pattern-library.md` (P9 + compose notes), `suite-manifest.md`
+  (P1..P9), and `SKILL.md`.
+
 ## [0.4.1] — 2026-06-29
 
 ### Added

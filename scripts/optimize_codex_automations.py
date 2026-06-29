@@ -51,7 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover
 # Matches the live convention: "## Automation Optimizer Protocol" ... "Protocol
 # version: N" ... "## End Automation Optimizer Protocol", with sidecars at the
 # JOB ROOT (not a state/ subfolder). State-file paths are absolute, per job.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 BEGIN_MARKER = "## Automation Optimizer Protocol"
 END_MARKER = "## End Automation Optimizer Protocol"
 PROTOCOL_VERSION_RE = re.compile(r"Protocol version:\s*(\d+)")
@@ -89,7 +89,10 @@ State files for this automation:
 - Concurrency lock: `{d}/{LOCK_FILE}`
 
 Start-of-run protocol:
-1. Create the concurrency lock with the current time, host, cwd, and process/thread context before modifying repos or trackers. If a fresh lock exists or live files are changing underneath you, stop and report instead of racing another run. If a lock is stale, record why it is stale before replacing it.
+1. Acquire the concurrency lock ATOMICALLY before touching repos or trackers, then hold it for the whole session (every continuation-loop unit). The acquire MUST fail when a lock already exists — never read-then-write, which races: two runs both judge the other "stale" and both proceed in parallel on the same repos.
+   - Acquire by creating the lock as a directory: `mkdir {d}/{LOCK_FILE}` (atomic; fails if it already exists). Equivalent atomic alternative: write the lock file under `set -o noclobber`. On success, record owner info inside it (e.g. `{d}/{LOCK_FILE}/owner`): a unique run token, PID, host, cwd, ISO start time, and `lease_until` = start + your maximum wall-clock budget.
+   - If the acquire FAILS, the lock is held — DEFER, do not run in parallel. Read the owner. If its recorded PID is still alive OR now is before `lease_until`, write a `deferred` ledger entry (`deferred: lock held by <token> until <lease_until>`) and STOP this run. Another instance owns the night; racing it corrupts shared repos.
+   - Reclaim ONLY a provably abandoned lock — its recorded PID is not alive AND now is past `lease_until` plus a grace margin. Reclaim atomically: note the dead token, remove the lock, re-acquire with the same atomic op, then READ IT BACK and confirm it now holds YOUR token. If any other token appears, another run beat you to it — defer and STOP. Record why the prior lock was abandoned.
 2. Read memory, the last run summary, baseline failures, priority queue, and human approval queue. Treat these as hints, not proof.
 3. Re-check live source of truth: repo status, tracker state, relevant tools, scheduled task config, and deployment state when applicable.
 4. Run a tool/environment preflight for required commands and services. If a prerequisite is missing, record it once, choose another safe target if possible, or stop with a precise blocker.
@@ -123,16 +126,19 @@ Continuation loop:
 - This is a between-unit loop, not the start-of-run change-detection gate: if NOTHING watched changed since the last run, that gate still ends the run as a no-op. The continuation loop only applies once there is genuine high-value work to do.
 
 Push, sync, and merge bias:
-- Default posture: verified completed work should be synced, pushed, and merged to the project default branch instead of left local, when project rules allow the automation to push or merge.
-- Before pushing or merging, fetch/prune, confirm the worktree is clean except intended changes, run the relevant checks, verify ownership, and confirm there is no active concurrency lock conflict.
-- Prefer the project's documented merge path. Use existing PRs when appropriate; otherwise use a non-history-rewriting local merge/squash path for automation-owned work when project policy permits.
-- If the push would trigger a production deploy, violate approval gates, cross a security/auth/billing/data boundary, overwrite unrelated dirty work, or conflict with project-specific no-main-push rules, do not push or merge. Push a safe feature branch only when allowed, update the human approval queue, and report the exact approval needed.
+- Default posture: verified completed work should be synced, pushed, and merged to the project default branch instead of left local. Bias toward LANDING safe work, not stranding it behind a human gate it does not need.
+- SAFE-MERGE LANE (auto-merge, no human approval) — the integrator (sole merge authority) may push and merge to the default branch when ALL of these hold: (a) every required gate/CI check passes on the branch; (b) every changed path is inside the producing job's declared `write_scope`; (c) NO changed path touches a production-config, secret/credential, database migration, deploy/release, CI/workflow, auth, billing, or other externally-facing surface; (d) the worktree is clean except the intended diff (agent-local tool metadata does NOT count as dirty — see below); (e) ownership is clear and there is no concurrency-lock conflict. Fetch/prune first; record the merged sha and a rollback note in the ledger.
+- Anything OUTSIDE that lane does NOT auto-merge: push a feature branch when allowed, add a STRUCTURED item to the human approval queue (see closeout), and report the exact approval needed. This covers any change touching the surfaces in (c), a failing or again-uncertain gate, ambiguous ownership, history rewrite, force-push, deploy, or a cross-repo/coordinated change.
+- Agent-local tool metadata is NOT a merge blocker: files like `.serena/`, `.beads/issues.jsonl`, local editor/scratch state, and similar local-only artifacts must be ignored by the clean-worktree check. If they are not yet git-ignored, adding that ignore rule is itself a safe instruction-level change (route it through the integrator / the P8 reflector) — never a reason to block the night's real work.
+- Evidence is PROPORTIONAL to the change: require screenshot/visual proof ONLY for user-visible UI changes. For logic, test, refactor, docs, or config changes, green automated checks are sufficient evidence — do not block a merge solely for a missing screenshot.
+- Prefer the project's documented merge path; use existing PRs when appropriate, otherwise a non-history-rewriting local merge/squash for automation-owned work when policy permits.
 - If checks fail because of a known baseline failure, do not hide it. Update the baseline registry and merge only when project policy explicitly permits that exception.
 
 Evidence and closeout:
 - Keep compact evidence only: commands, pass/fail summaries, tracker ids, commit hashes, screenshot paths when UI proof matters, and the exact next action.
 - Update memory, baseline failures, priority queue, human approval queue, `last-run.md`, and a dated run ledger before final reporting.
-- Remove or mark the concurrency lock as complete at the end when safe.
+- When you queue a human decision, write it to `human-approval.md` as a STRUCTURED item the cross-project digest can read: a `## <one-line ask>` heading, then `- risk:` low|medium|high, `- suggested_default:` (what you would do absent other input), `- action:` (the exact command / branch / ticket id to act on), `- first_seen:` (ISO date), and `- evidence:` (ids/paths, never secrets). Keep these fields current; remove an item once it is resolved.
+- Release the concurrency lock at the end ONLY if it still holds YOUR run token — never delete a lock you no longer own. If you crashed mid-run, the lease lets the next run reclaim it safely.
 - Final report must state what was checked, what was skipped as known, what was fixed, what was pushed or merged, what remains blocked, and the next best target.
 
 ## End Automation Optimizer Protocol"""
@@ -158,6 +164,10 @@ SIDECARS = {
     ),
     "human-approval.md": (
         "# Human approval queue\nUnsafe actions awaiting a human. Nothing here is auto-executed.\n"
+        "Format per item — a `## <one-line ask>` heading, then: "
+        "`- risk:` low|medium|high  `- suggested_default:` ...  "
+        "`- action:` exact command/branch/id  `- first_seen:` ISO date  "
+        "`- evidence:` ids/paths (no secrets). The daily cross-project digest reads these.\n"
     ),
 }
 REQUIRED_SIDECARS = list(SIDECARS.keys())
@@ -165,7 +175,7 @@ REQUIRED_SIDECARS = list(SIDECARS.keys())
 INACTIVE_STATUSES = {"disabled", "archived", "paused", "inactive", "off"}
 
 # --- Fleet / suite constants -------------------------------------------------
-KNOWN_TEMPLATES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"}
+KNOWN_TEMPLATES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"}
 PHASE_RANK = {"producer": 0, "integrator": 1, "janitor": 2, "reflector": 3}
 FINGERPRINT_FIELDS = (
     "template", "template_version", "merge_authority",
@@ -484,7 +494,7 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
     for j in jobs:
         if j.get("template") not in KNOWN_TEMPLATES:
             errors.append(f"{j.get('id')}: unknown template "
-                          f"{j.get('template')!r} (expected P1..P8)")
+                          f"{j.get('template')!r} (expected P1..P9)")
 
     # Rule 1 + 2: at most one merge authority; exactly one when any producer or
     # janitor exists; the authority (if any) must be the integrator; and every

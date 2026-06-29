@@ -69,7 +69,7 @@ Use when the user wants new automations rather than hardening existing ones. Ful
 
 1. **Profile (read-only).** Detect capabilities, never assume them: default branch + protection, test runners, the "gates pass" signal, the tracker, platform capabilities (e.g. iOS simulator), security scanners, complexity signals, and any existing automations. Run the optimizer audit first so you don't propose a duplicate.
 
-2. **Propose.** From the eight patterns, select only those whose capabilities are present and draft a `suite.toml` plus a plain-English rationale: which patterns fit, which were skipped and why, the phase ordering, and which single job holds merge authority. Flag anything that can write to `main`.
+2. **Propose.** From the eight per-project patterns, select only those whose capabilities are present and draft a `suite.toml` plus a plain-English rationale: which patterns fit, which were skipped and why, the phase ordering, and which single job holds merge authority. Flag anything that can write to `main`. (P9, the cross-project approval digest, is fleet-global — installed once, not selected per project.)
 
 3. **Confirm once.** The user approves; write an approval record (`approved_fingerprint`) per job. This is the suite's one mandatory human gate.
 
@@ -97,7 +97,9 @@ python3 ~/.codex/skills/automation-optimizer/scripts/optimize_codex_automations.
 
 **Principle — adaptive, not targeted:** templates discover their commands at runtime and degrade to propose-only when a capability is missing; they never hardcode or guess project commands. **Fleet rule — one merge authority:** exactly one job (the integrator) merges to `main` when any producer/janitor exists; producers hand off via branches + tracker tickets. For new jobs that can merge, start in `mode = "shadow"` for the first few runs.
 
-The eight patterns: P1 coverage-and-quality ratchet, P2 product-value explore/fix/confirm loop, P3 repo-hygiene integrator (the sole merge authority), P4 leftover resolver, P5 collaboration meta-learner, P6 code-simplification ratchet, P7 code-security sweep (escalates high-severity findings to the approval queue), P8 dev-environment self-reflection (keeps CLAUDE.md/AGENTS.md and dev tooling current — instruction edits via the integrator, hooks/CI/settings via the approval queue).
+The eight per-project patterns: P1 coverage-and-quality ratchet, P2 product-value explore/fix/confirm loop, P3 repo-hygiene integrator (the sole merge authority), P4 leftover resolver, P5 collaboration meta-learner, P6 code-simplification ratchet, P7 code-security sweep (escalates high-severity findings to the approval queue), P8 dev-environment self-reflection (keeps CLAUDE.md/AGENTS.md and dev tooling current — instruction edits via the integrator, hooks/CI/settings via the approval queue).
+
+A ninth, fleet-global pattern runs across every project: **P9 cross-project approval digest** (phase reflector, no merge authority) — its deterministic engine `scripts/approval_digest.py` reads every automation's `human-approval.md`, dedupes, ranks by age, and writes one `~/.codex/DAILY-APPROVALS.md` bucketed into "safe to batch-approve" vs "needs judgment", with an optional local macOS notification (external email/Slack stays off unless configured + opted in). Install it once, not per project.
 
 ## Lifecycle modes (managing one automation over time)
 
