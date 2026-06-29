@@ -6,3 +6,6 @@ __pycache__/
 
 # Internal design-review artifact — not part of the public skill
 RECOMMENDATIONS.md
+
+# local preview server log / browser artifacts
+.playwright-mcp/
