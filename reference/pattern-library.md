@@ -15,12 +15,13 @@ From Example 1. Raise *meaningful* automated-test protection, then pivot to test
 
 - **requires:** a detectable test runner + coverage capability for at least one stack.
 - **degrades:** if no coverage tooling is found for a stack, skip that stack and record it; if none at all, propose-only.
-- **params:** `coverage_floor = 75` (aggregate %), `quality_mode_when_met = true`.
+- **params:** `coverage_floor = 75` (aggregate %), `quality_mode_when_met = true`, `max_units = 5` (continuation-loop budget).
 - **adaptive body:**
   - Discover stacks and their test/coverage commands from project files; compute *fresh* aggregate coverage (never trust a stored number — AO-08).
-  - **If aggregate < `coverage_floor`:** spend the run on the highest-impact *uncovered behavior* (not line-padding). Prefer behavior with high blast radius and no current protection. Add tests on a branch; open a tracker ticket; hand off to the integrator. Never weaken assertions to pass.
+  - **If aggregate < `coverage_floor`:** spend the unit on the highest-impact *uncovered behavior* (not line-padding). Prefer behavior with high blast radius and no current protection. Add tests on a branch; open a tracker ticket; hand off to the integrator. Never weaken assertions to pass.
   - **If aggregate ≥ `coverage_floor`:** stop hunting new coverage by default. Improve quality instead — delete or rewrite weak/tautological tests, add mutation-style proof that tests actually catch regressions, and tighten quality gates. Tightening a gate never needs re-confirmation; loosening one does (fingerprint rule).
-  - Evidence = test names + coverage delta + mutation results, not full logs.
+  - **Continuation loop:** after a unit, pick the next-highest-impact independent target and repeat — up to `max_units` units per run, stopping early on diminishing returns, two consecutive blocked units, or an empty target list.
+  - Evidence per unit = test names + coverage delta + mutation results, not full logs.
 
 ## P2 — product-value explore/fix/confirm loop  (phase: producer, merge_authority: false)
 From Example 2. Find and fix real user-facing issues by driving the running app.
@@ -31,7 +32,7 @@ From Example 2. Find and fix real user-facing issues by driving the running app.
 - **adaptive body:**
   - Launch the app, explore real screens by interacting, and **stop at the first confirmed user-facing issue.**
   - Fix that one issue, relaunch, and **replay the exact path to prove the fix** before moving on.
-  - Continue up to `max_loops` explore/fix/confirm cycles per run, then stop (AO-11/12 budget).
+  - Loop: after a confirmed+replayed fix, explore for the next issue — up to `max_loops` explore/fix/confirm cycles per run (AO-11/12 budget), stopping early on two consecutive cycles that find nothing or can't confirm a fix.
   - Confirmed fixes go to a branch + ticket and are handed to the integrator; they merge only when project gates pass. Capture the replay result as evidence.
 
 ## P3 — repo-hygiene integrator  (phase: integrator, merge_authority: TRUE — exactly one per suite)
@@ -51,11 +52,11 @@ From Example 4. Runs *after* producers and the integrator; depends on them by co
 
 - **requires:** read access to git state + the tracker.
 - **degrades:** always runnable; if nothing is dirty, change-detection short-circuits to a no-op (AO-08).
-- **params:** `safe_fix_only = true`.
+- **params:** `safe_fix_only = true`, `max_units = 5` (continuation-loop budget).
 - **adaptive body:**
   - Look for leftovers from the producer + integrator phases: dirty files, WIP branches, failed checks, merge conflicts, ambiguous ownership, blocked work.
-  - **If a leftover can be safely fixed, verified, committed, and merged without triggering production,** do it (handing the merge to the integrator's gate, or queuing if the integrator has already finished).
-  - **If not, record the blocker and exactly one concrete next action** as a tracker ticket. Avoid the ping-pong failure mode: never "fix" something a producer will simply regenerate — if you see a loop, escalate it to the reflector instead.
+  - **Resolve them in a loop, highest-value first, up to `max_units` per run.** For each: if it can be safely fixed, verified, committed, and merged without triggering production, do it (handing the merge to the integrator's gate, or queuing if the integrator has already finished). If not, record the blocker and exactly one concrete next action as a tracker ticket. Stop early when nothing actionable remains or two consecutive leftovers are blocked.
+  - Avoid the ping-pong failure mode: never "fix" something a producer will simply regenerate — if you see a loop, escalate it to the reflector instead.
 
 ## P5 — collaboration meta-learner  (phase: reflector, merge_authority: false)
 From Example 5. Runs last; improves how the agent works with the user over time.
@@ -100,13 +101,15 @@ Find and remediate security issues; the most safety-gated producer after P2.
   (`gitleaks`/`trufflehog`), or SAST (`semgrep`/CodeQL).
 - **degrades:** if no scanner is present, **propose-only** — report findings it
   can determine and recommend enabling a scanner; never invent a scan result.
-- **params:** `auto_fix_max_severity = "low"`, `escalate_at_or_above = "high"`.
+- **params:** `auto_fix_max_severity = "low"`, `escalate_at_or_above = "high"`, `max_units = 5` (continuation-loop budget for safe fixes).
 - **adaptive body:**
   - Run the detected scanners and classify each finding by severity and type
     (vulnerable dependency, leaked secret, injection/unsafe pattern, misconfig).
   - **Safe, low-risk fixes** (e.g. a dependency bump whose gates pass, with no
     behavior change) up to `auto_fix_max_severity` go to a branch + ticket and the
-    integrator's gate — like any other producer.
+    integrator's gate — like any other producer. **Loop over them up to `max_units`
+    per run,** stopping early when none remain or two consecutive fixes fail their
+    gate. Escalations (below) are queued, never fixed, and don't count against the budget.
   - **Anything at or above `escalate_at_or_above`, or that touches auth, secrets,
     crypto, or security config, goes to the approval queue (AO-18) — never
     auto-merged**, even if gates pass. Security fixes can be subtly wrong; a human

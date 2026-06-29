@@ -4,7 +4,7 @@ A skill that makes recurring AI-agent automations behave like reliable operators
 
 It does three things:
 
-- **Optimize** existing recurring automations: inject a versioned operating protocol (persistent memory, run ledger, concurrency lock, tool preflight, change-detection, failure taxonomy, stop rules, multi-agent execution, human-approval queue, verified safe-merge closeout), idempotently and with backups.
+- **Optimize** existing recurring automations: inject a versioned operating protocol (persistent memory, run ledger, concurrency lock, tool preflight, change-detection, failure taxonomy, stop rules, a continuation loop that completes multiple bounded work-units per run, multi-agent execution, human-approval queue, verified safe-merge closeout), idempotently and with backups.
 - **Compose** new automation suites from an adaptive 8-pattern library (coverage ratchet, product-value loop, repo-hygiene integrator, leftover resolver, collaboration meta-learner, code-simplification, code-security, dev-environment self-reflection), wired into a coordinated fleet with exactly one merge authority. Templates are capability-driven: they detect what a project supports and degrade gracefully, never guessing commands.
 - **Discover** what automations are already installed across every agent.
 

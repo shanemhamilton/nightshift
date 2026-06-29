@@ -51,15 +51,19 @@ except ModuleNotFoundError:  # pragma: no cover
 # Matches the live convention: "## Automation Optimizer Protocol" ... "Protocol
 # version: N" ... "## End Automation Optimizer Protocol", with sidecars at the
 # JOB ROOT (not a state/ subfolder). State-file paths are absolute, per job.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 BEGIN_MARKER = "## Automation Optimizer Protocol"
 END_MARKER = "## End Automation Optimizer Protocol"
 PROTOCOL_VERSION_RE = re.compile(r"Protocol version:\s*(\d+)")
+# Default number of bounded work-units a single run completes when the task body
+# states no cap of its own. The continuation loop honors a pattern's own
+# loop/changeset/edit cap first, and falls back to this otherwise.
+DEFAULT_RUN_UNIT_BUDGET = 5
 # Stable section headers used by --strict as an integrity check (prose may vary).
 REQUIRED_SECTIONS = [
     "Start-of-run protocol", "Agentic execution protocol",
     "Duplicate-avoidance protocol", "Failure taxonomy",
-    "Push, sync, and merge bias", "Evidence and closeout",
+    "Continuation loop", "Push, sync, and merge bias", "Evidence and closeout",
 ]
 # Sidecars live at the JOB ROOT directory.
 LOCK_FILE = ".automation.lock"
@@ -108,8 +112,15 @@ Failure taxonomy:
 
 Scope and target selection:
 - Prefer high-value targets that are least recently covered, adjacent to recent fixes, or newly unblocked.
-- Respect any task-specific loop, time, file-count, merge, and deploy limits. If none are stated, complete at most one bounded fix or one bounded cleanup before closeout.
+- Respect any task-specific loop, time, file-count, merge, and deploy limits. Each unit of work stays bounded. If the task states no per-run cap, complete up to {DEFAULT_RUN_UNIT_BUDGET} bounded units this run (see the continuation loop below).
 - Do not spend the whole run on a known blocker unless its status changed.
+
+Continuation loop:
+- You are running overnight and usually finish one unit with time to spare. Do not stop after a single unit. After a unit closes out safely, loop back and start the next one so the run delivers as much verified value as the budget allows.
+- Each loop: re-read live state, fingerprint-dedupe against the work you just completed this run (so your own commits/tickets are never mistaken for new work), then pick the next highest-value unblocked target from the priority queue.
+- Keep looping until ANY stop condition is hit, then go to closeout: (a) the per-run unit budget is reached — the task's own loop/changeset/edit cap, or {DEFAULT_RUN_UNIT_BUDGET} if none is stated; (b) no new high-value unblocked target remains (priority queue drained, nothing else changed); (c) two consecutive units this run fail or are blocked; (d) the next unit would cross an approval or otherwise unsafe boundary — queue it and stop that line of work; (e) you detect you are repeating or ping-ponging your own output.
+- Every unit independently obeys this whole protocol (duplicate-avoidance, failure taxonomy, merge bias). Hold the SAME concurrency lock for the whole session across all units — do not release and re-acquire it between units. Write one ledger entry per unit.
+- This is a between-unit loop, not the start-of-run change-detection gate: if NOTHING watched changed since the last run, that gate still ends the run as a no-op. The continuation loop only applies once there is genuine high-value work to do.
 
 Push, sync, and merge bias:
 - Default posture: verified completed work should be synced, pushed, and merged to the project default branch instead of left local, when project rules allow the automation to push or merge.
@@ -135,7 +146,8 @@ SIDECARS = {
         "- last_success:\n\n## Stable decisions\n\n## Consecutive failures\n- count: 0\n"
     ),
     "last-run.md": (
-        "# Last run\n- when:\n- outcome:\n- runtime_s:\n- items_touched:\n- retries:\n"
+        "# Last run\n- when:\n- outcome:\n- runtime_s:\n- items_touched:\n"
+        "- units_completed: 0\n- stop_reason:\n- retries:\n"
         "- failure_class: none\n- rollback: n/a\n- notes:\n"
     ),
     "priority-queue.md": (

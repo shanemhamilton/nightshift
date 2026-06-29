@@ -19,8 +19,8 @@ Every recurring job must satisfy these items. Each line states the control and t
 10. **Priority queue / next-best-target logic** — pick the highest-value unblocked target rather than re-doing the first thing every run.
 
 ## Bounds and failure handling
-11. **Scope / time / loop stop rules** — hard limits on what a single run may touch.
-12. **Cost & runtime budget** — explicit caps: max wall-clock, max tool calls, max subagents, max items per run. Prevents runaway cost.
+11. **Continuation loop with scope / loop stop rules** — each *unit* of work is bounded, but a *run* keeps completing the next highest-value unblocked unit instead of stopping after one (operators finish fast and the night is long). The run continues until a stop rule fires: the per-run unit budget is reached (a pattern's own `max_loops`/`max_changesets`/`max_edits`/`max_units` cap, or a default of 5 when none is stated), the priority queue is drained, two consecutive units fail/block, the next unit crosses an approval boundary, or the job detects it is ping-ponging its own output. This is distinct from the start-of-run change-detection gate (item 8), which still exits as a no-op when nothing changed.
+12. **Cost & runtime budget** — explicit caps: max wall-clock, max tool calls, max subagents, and a max-units-per-run count (the continuation-loop budget). Prevents runaway cost while still using the whole night.
 13. **Retry/backoff policy** — transient failures retry with capped exponential backoff + jitter; only `transient`-classified failures are retried.
 14. **Failure taxonomy** — classify each failure (`transient`, `config`, `baseline`, `blocked`, `needs-human`) so the right handler runs.
 15. **Failure-escalation threshold** — after N consecutive failed runs (default 3), stop retrying silently and surface to the approval queue / notify a human.

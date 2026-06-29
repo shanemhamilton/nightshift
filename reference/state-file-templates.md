@@ -44,6 +44,8 @@ Treat as a hint, never as proof. Re-check live state every run.
 - outcome: success | no-op | partial | failed
 - runtime_s: <int>
 - items_touched: <int>
+- units_completed: <int>            # bounded units finished this run (continuation loop)
+- stop_reason: <budget | queue-drained | repeated-failure | approval-boundary | no-op>
 - retries: <int>
 - failure_class: <none | transient | config | baseline | blocked | needs-human>
 - rollback: <branch / issue id / commit sha, or n/a>

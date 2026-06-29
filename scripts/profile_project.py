@@ -255,7 +255,8 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
     # producers
     if caps["test_net"]:
         jobs.append(_job("coverage-ratchet", "P1", "producer", write_scope=src,
-                         hands_off_to=INTEGRATOR_ID, params={"coverage_floor": 75}))
+                         hands_off_to=INTEGRATOR_ID,
+                         params={"coverage_floor": 75, "max_units": 5}))
     else:
         skipped.append(("P1", "coverage-and-quality ratchet: no test runner / coverage "
                               "capability detected"))
@@ -280,7 +281,7 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
         jobs.append(_job("code-security", "P7", "producer", write_scope=["**"],
                          hands_off_to=INTEGRATOR_ID,
                          params={"auto_fix_max_severity": "low",
-                                 "escalate_at_or_above": "high"}))
+                                 "escalate_at_or_above": "high", "max_units": 5}))
     else:
         skipped.append(("P7", "code-security sweep: no scanner detected — enable npm audit / "
                               "pip-audit / gitleaks / semgrep, then re-profile"))
@@ -300,7 +301,7 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
     # janitor only if there is produced work to clean up after
     if has_producers:
         jobs.append(_job("leftover-resolver", "P4", "janitor", write_scope=["**"],
-                         params={"safe_fix_only": True}))
+                         params={"safe_fix_only": True, "max_units": 5}))
     else:
         skipped.append(("P4", "leftover resolver: no producers in this suite, so there are "
                               "no producer leftovers to resolve yet"))

@@ -62,6 +62,7 @@ phase = "janitor"
 merge_authority = false
 schedule = "0 4 * * *"
 write_scope = ["**"]
+params = { max_units = 5 }          # continuation-loop budget: resolve up to 5 leftovers/run
 
 [[job]]
 id = "myskiniq-collab-meta-learner"

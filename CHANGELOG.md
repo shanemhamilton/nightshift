@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-06-29
+
+### Added
+- **Continuation loop (managed protocol v2 → v3).** Operators finish a unit of work fast and then sat
+  idle for the rest of the night. The managed block now has a `Continuation loop` section: after a unit
+  closes out safely, the operator re-reads live state, fingerprint-dedupes against the work it just did,
+  and picks the next highest-value unblocked target — looping until a stop rule fires (per-run unit
+  budget reached, priority queue drained, two consecutive units fail/block, an approval boundary, or
+  self-ping-pong detection). The start-of-run change-detection no-op gate is unchanged. Generated via
+  `managed_block()` in `scripts/optimize_codex_automations.py`, so it reaches Codex, Claude, Gemini, and
+  Cursor through one source; existing v2 Codex automations show `needs-upgrade` and re-injection lands v3.
+- **Per-pattern run budgets.** `pattern_bodies.py` adds `max_units = 5` to P1 (coverage), P4 (leftovers),
+  and P7 (safe security fixes), and reframes their bodies to loop until the budget or an early-stop
+  condition. P3 (integrator) now explicitly *drains its whole handoff queue* so a long producer night
+  gets integrated (or finished next integrator run). P2 (`max_loops`) and P6 (`max_changesets`) keep
+  their existing caps. Reflectors P5/P8 keep their low edit caps on purpose — for them "use the night"
+  means reviewing more signals, not making more edits. `profile_project.py` emits the new `max_units`
+  params explicitly in generated suites.
+- **Ledger fields.** `last-run.md` now records `units_completed` and `stop_reason`.
+
+### Changed
+- Reference docs updated in lockstep: `optimizer-contract.md` (AO-11/AO-12), `pattern-library.md`,
+  `state-file-templates.md`, `suite-manifest.md`, `optimizer-block.md`, plus `SKILL.md`/`README.md`
+  feature lists.
+
 ## [0.4.0] — 2026-06-28
 
 ### Changed
