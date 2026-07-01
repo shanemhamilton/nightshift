@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-06-29
+
+### Added
+- **P10 — documentation-sync ratchet (per-project pattern).** A new producer that keeps
+  *user-facing* documentation (README, `docs/`, API reference, CHANGELOG) in sync with the code
+  that has actually landed on the default branch — behavior-neutral, so it hands doc branches to
+  the single integrator (P3) and merges the same night. Built for the two properties requested:
+  **efficiency** — it scopes by the change-detection window (the diff since its last successful run,
+  not a whole-repo re-scan), prefers regenerating from a docs generator / API-spec pipeline over
+  hand-writing, runs a bounded continuation loop (`max_docsets = 5`), and no-ops when nothing it
+  covers drifted; **accuracy** — code is the source of truth (a disagreeing doc is corrected to
+  match the code), every symbol/path/flag/example must be grep-verified to exist before it is
+  written (no fabrication), and a detectable docs build / link-check must pass before handoff
+  (`require_doc_build = true`). Capability-gated on a documentation surface (README, `docs/`, API
+  spec, or a docs generator); absent → propose-only. Clear boundary with P8: P10 owns user-facing
+  docs, P8 owns the agent-instruction files; P10's write scope excludes those and leaves inline
+  docstrings out unless `include_inline_docstrings` is set.
+  - Wired through `pattern_bodies.py` (body + defaults), `profile_project.py` (docs-surface
+    detection + selection), `optimize_codex_automations.py` (`KNOWN_TEMPLATES`), the references
+    (`pattern-library.md`, `composer.md`, `suite-manifest.md`), `SKILL.md`, and a new self-test
+    assertion. `selftest_lifecycle.py`: 26/26 pass.
+
 ## [0.5.0] — 2026-06-29
 
 Hardening pass driven by an overnight fleet audit (lock collisions, schedule drift, near-zero

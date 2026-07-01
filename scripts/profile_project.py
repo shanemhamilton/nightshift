@@ -75,6 +75,11 @@ STACK_SCOPES = {
     "java/kotlin": ["src/**"],
 }
 
+# Write scope for P10 (documentation-sync): user-facing docs only. Deliberately
+# excludes the agent-instruction files (CLAUDE.md/AGENTS.md/GEMINI.md/.cursor/rules)
+# and source code — those belong to P8 and P6 respectively.
+DOCS_SCOPES = ["README*", "docs/**", "CHANGELOG*", "openapi*", "swagger*", "*.openapi.*"]
+
 
 # --- small read-only helpers -------------------------------------------------
 def _exists(root: Path, *names: str) -> str | None:
@@ -203,6 +208,20 @@ def detect(root: Path) -> dict:
     if linter:
         caps["evidence"]["linter"] = linter
 
+    # documentation surface for P10: a README, a docs/ tree, an API spec, or a
+    # docs generator config — any of these is a surface worth keeping in sync.
+    doc_surface = _glob_any(root, "README*") or _exists(root, "docs") \
+        or _glob_any(root, "openapi.*", "swagger.*", "*.openapi.*")
+    doc_generator = _exists(root, "mkdocs.yml", "mkdocs.yaml", "typedoc.json",
+                            "book.toml") \
+        or _glob_any(root, "docusaurus.config.*", "docs/conf.py", ".vitepress/config.*")
+    caps["docs_surface"] = bool(doc_surface or doc_generator)
+    if doc_surface:
+        caps["evidence"]["docs_surface"] = doc_surface
+    if doc_generator:
+        caps["docs_generator"] = doc_generator
+        caps["evidence"]["docs_generator"] = doc_generator
+
     # source scopes
     scopes: list[str] = []
     for s in stacks:
@@ -248,7 +267,7 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
         for pid, name in [("P1", "coverage-and-quality ratchet"),
                           ("P2", "product-value loop"), ("P3", "repo-hygiene integrator"),
                           ("P4", "leftover resolver"), ("P6", "code-simplification"),
-                          ("P7", "code-security sweep")]:
+                          ("P7", "code-security sweep"), ("P10", "documentation-sync ratchet")]:
             skipped.append((pid, f"{name}: not a git repo — nothing to branch/merge/clean"))
         return jobs, skipped
 
@@ -285,6 +304,15 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
     else:
         skipped.append(("P7", "code-security sweep: no scanner detected — enable npm audit / "
                               "pip-audit / gitleaks / semgrep, then re-profile"))
+
+    if caps["docs_surface"]:
+        jobs.append(_job("docs-sync", "P10", "producer", write_scope=DOCS_SCOPES,
+                         hands_off_to=INTEGRATOR_ID,
+                         params={"max_docsets": 5, "require_doc_build": True,
+                                 "include_inline_docstrings": False}))
+    else:
+        skipped.append(("P10", "documentation-sync ratchet: no documentation surface "
+                               "(README, docs/, API spec, or docs generator) detected"))
 
     has_producers = any(j["phase"] == "producer" for j in jobs)
 

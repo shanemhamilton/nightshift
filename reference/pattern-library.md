@@ -1,6 +1,6 @@
 # Adaptive Pattern Library
 
-Eight reusable, capability-driven automation patterns. They are written in terms of *discover X, then act*, never *run a fixed command*, so one template adapts across backend, iOS, and mixed projects. Each carries the managed optimizer block (`optimizer-block.md`) above its task body and is wired into a suite by `suite-manifest.md`.
+Nine reusable per-project, capability-driven automation patterns (P1–P8 and P10) plus one fleet-global pattern (P9). They are written in terms of *discover X, then act*, never *run a fixed command*, so one template adapts across backend, iOS, and mixed projects. Each carries the managed optimizer block (`optimizer-block.md`) above its task body and is wired into a suite by `suite-manifest.md`.
 
 Conventions used below:
 - **phase** — producer | integrator | janitor | reflector (defines run order; see manifest).
@@ -133,6 +133,20 @@ Runs last, alongside P5. Where P5 learns how the agent *collaborates* with the u
   - **Bias to no change.** At most `max_edits` high-signal changes per run; everything else becomes a memory note or a tracker ticket, with the reason recorded. Never store secret values; reference signals by fingerprint (AO-16).
   - Coordinate with P5: interaction-style lessons stay with P5 (→ memory); environment/config lessons are P8's (→ instruction files + approval-queued tooling). If a file is already correct, leave it.
 
+## P10 — documentation-sync ratchet  (phase: producer, merge_authority: false)
+Keep project documentation in sync with the code that has *actually landed* on the default branch — accurately, and without churning docs for the sake of activity. It documents merged, gate-passed code (read from the default branch), so it never describes work that hasn't passed the gate. Doc changes are behavior-neutral, so they hand off to the integrator and merge the same night like any other producer.
+
+- **requires:** a documentation surface — a `README`, a `docs/` tree, an API spec (`openapi`/`swagger`), or a docs generator config (`mkdocs`, `docusaurus`, `typedoc`, sphinx `conf.py`, `mdbook`).
+- **degrades:** if no documentation surface is detected, **propose-only** (recommend adding a `README`/`docs/`), never fabricate docs into a void.
+- **params:** `max_docsets = 5` (continuation-loop budget), `require_doc_build = true`, `include_inline_docstrings = false`.
+- **adaptive body:**
+  - **Scope by change, not by repo (efficiency).** Drive off the change-detection window: take the code that changed on the default branch since the last successful run and map each change to the doc that describes it. If nothing the docs cover changed, no-op (AO-08) — never re-document the whole project nightly.
+  - **Prefer generators over prose (accuracy + cost).** When a docs generator or API-spec pipeline exists, regenerate the affected output and commit that rather than hand-writing — generated docs are more accurate and cheaper. Run the generator; never fabricate its output.
+  - **Ground every statement in current code (accuracy).** Code is the source of truth: when a doc disagrees with the code, fix the *doc*. Every symbol, path, flag, command, signature, or example must be verified to exist in the current tree (grep/symbol lookup) — never invent an API, path, or example. Unverifiable claims are removed or flagged, not guessed.
+  - **Continuation loop:** correct the highest-drift doc unit first, then the next, up to `max_docsets` per run; stop early when no covered code has drifted or two consecutive units have nothing to correct.
+  - **Gate on the docs build** when one is detectable (`require_doc_build`): a doc change that breaks the build or a cross-reference is not done. Each unit goes to a branch + ticket handed to the integrator; merges only when gates pass.
+  - **Boundary with P8:** P10 owns *user-facing* documentation (README, docs/, API reference, CHANGELOG); P8 owns the *agent-instruction* files (CLAUDE.md/AGENTS.md/GEMINI.md/.cursor/rules). P10's write scope excludes those, and inline docstrings/code comments stay out unless `include_inline_docstrings` is set, since editing them touches source. Evidence per unit = doc diff + code refs (`path:symbol`) + generator/doc-build status.
+
 ---
 
 ## P9 — cross-project approval digest  (phase: reflector, merge_authority: false, FLEET-GLOBAL)
@@ -148,10 +162,10 @@ Installed once for the whole fleet, not per project. Runs after every project's 
 
 ## How they compose
 
-Default healthy DAG when all eight apply:
+Default healthy DAG when all nine per-project patterns apply:
 
 ```
-producers (P1 coverage, P2 product-value, P6 simplification, P7 security)
+producers (P1 coverage, P2 product-value, P6 simplification, P7 security, P10 docs-sync)
         │  hand off branches + tickets  (P7 high-severity → approval queue)
         ▼
 integrator (P3 hygiene)  ← the ONLY job that merges to main
@@ -166,4 +180,4 @@ reflectors (P5 collaboration → memory, P8 dev-environment → instructions/con
 
 Producers never merge; they produce. The integrator is the single merge authority. The janitor depends on the producers and integrator finishing. The two reflectors run last and bias to no change — P5 tunes collaboration into memory, P8 keeps the instruction files and tooling current (instruction edits through the integrator's gate, execution-shaping config to the approval queue). The composer omits any pattern whose capabilities aren't present (e.g., P2 on a backend-only repo, P7 with no scanner) and still produces a valid smaller suite.
 
-All four producers can share the same producer window; they don't conflict because none of them merge — they only open branches and tickets that the single integrator later reconciles. P7's high-severity findings and P6's unprovable simplifications route to the approval queue rather than the integrator.
+All producers can share the same producer window; they don't conflict because none of them merge — they only open branches and tickets that the single integrator later reconciles. P7's high-severity findings and P6's unprovable simplifications route to the approval queue rather than the integrator. P10 documents the default branch as it stood at the start of the window, so it trails this-night's freshly-merged code by one integrator cycle by design — it never documents code that hasn't passed the gate.

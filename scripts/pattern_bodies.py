@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pattern_bodies.py — adaptive task bodies + per-template defaults for P1..P8.
+pattern_bodies.py — adaptive task bodies + per-template defaults for P1..P10.
 
 Pure data, kept separate from the materializer logic that consumes it. Each body
 is a parameterized DISCOVER-then-ACT instruction; it never hardcodes a project
@@ -11,8 +11,8 @@ there is exactly one copy.
 from __future__ import annotations
 
 # Per-template defaults so every placeholder resolves even if params are omitted.
-# `max_units` / `max_loops` / `max_changesets` / `max_edits` are each pattern's
-# per-run continuation-loop budget: how many bounded units it completes before
+# `max_units` / `max_loops` / `max_changesets` / `max_edits` / `max_docsets` are
+# each pattern's per-run continuation-loop budget: how many bounded units it completes before
 # closeout (it still stops early on diminishing returns, repeated failure, or an
 # empty queue). Reflectors (P5/P8) keep a deliberately low edit cap — for them
 # "more loops" means reviewing more signals, not making more changes.
@@ -26,6 +26,7 @@ DEFAULTS = {
     "P7": {"auto_fix_max_severity": "low", "escalate_at_or_above": "high", "max_units": 5},
     "P8": {"lookback_hours": 24, "max_edits": 3, "config_changes_need_approval": True},
     "P9": {},  # cross-project digest: no tunable caps; channels are flags on the script
+    "P10": {"max_docsets": 5, "require_doc_build": True, "include_inline_docstrings": False},
 }
 
 BODIES = {
@@ -96,4 +97,13 @@ Runs last, after every project's reflectors. Goal: collapse all pending human de
 3. Do NOT approve, merge, deploy, or act on any item — surfacing is your whole job; the human decides. The only writes you make are the digest file and, if configured, a local notification.
 4. External delivery (email/Slack) stays OFF unless the operator has configured a channel AND approved it. If a channel is configured, pass `--channel <name>` and let the script enforce the opt-in; never send externally on your own initiative.
 5. Evidence = the digest path, item counts per bucket, and the notification status. Keep memory to a one-line trend (counts over time), never the decisions themselves.""",
+
+"P10": """## Task — documentation-sync ratchet (P10, producer)
+Goal: keep project documentation in sync with the code that has actually landed on the default branch — accurately and without churn. You do NOT merge; hand doc updates to '{integrator}'. You edit ONLY user-facing documentation (README, docs/, API reference, CHANGELOG) — never source code, and never the agent-instruction files (CLAUDE.md / AGENTS.md / GEMINI.md / .cursor/rules); those belong to P8.
+1. Scope by CHANGE, not by repo. From the change-detection window, take the code that changed on the default branch since your last successful run and map each change to the documentation that describes it. If nothing the docs cover has changed, no-op — never rewrite docs for the sake of activity. This is what keeps the job cheap.
+2. Prefer GENERATORS over prose. If the project has a docs generator or API-spec pipeline (typedoc, sphinx, mkdocs, docusaurus, openapi/swagger), regenerate the affected output and commit that instead of hand-editing — generated docs are more accurate and cheaper. Run the generator; never fabricate its output.
+3. Ground EVERY statement in current code before writing. Code is the source of truth: when a doc disagrees with the code, fix the doc to match the code (never the reverse). Every symbol, path, flag, command, signature, or example you write MUST be verified to exist in the current tree (grep / symbol lookup) — never invent an API, file path, or example. If you cannot verify a claim, remove or flag it; do not guess.
+4. Loop, highest-drift first: correct the most out-of-date doc unit, then the next, for up to {max_docsets} independent doc units this run. Each goes to a branch + ticket handed to '{integrator}'; doc changes are behavior-neutral and merge the same night when gates pass. Stop early when no covered code has drifted or two consecutive units have nothing to correct; record the stop reason.
+5. Gate on the docs build when one exists: if require_doc_build is {require_doc_build} and a doc build / link-check is detectable, it MUST pass before handoff — a doc change that breaks the build or a cross-reference is not done. Inline docstrings and code comments stay OUT of scope unless include_inline_docstrings is {include_inline_docstrings}, because editing them touches source files (P6's territory for behavior, P10 only when explicitly enabled).
+6. Evidence per unit = the doc diff + the exact code refs (path:symbol) each change is grounded in + generator / doc-build status. Keep memory to fingerprints + a drift count, never doc contents.""",
 }

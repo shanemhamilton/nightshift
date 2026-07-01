@@ -4,7 +4,7 @@ lifecycle.py — manage a single automation across its whole life, on any agent.
 
 Four verbs, one front door:
   setup   profile a project and stand up its whole suite (propose → confirm → install)
-  add     add one pattern (P1..P8) to an existing suite
+  add     add one pattern (P1..P10) to an existing suite
   remove  retire a job — DISABLE by default (reversible), --purge to archive+delete
   update  change a job's schedule / params / scope / mode / model, re-gated
 
@@ -329,7 +329,7 @@ def main(argv: list[str]) -> int:
     _common(s, needs_suite=False)
     s.set_defaults(func=cmd_setup)
 
-    a = sub.add_parser("add", help="add one pattern (P1..P8) to a suite")
+    a = sub.add_parser("add", help="add one pattern (P1..P10) to a suite")
     a.add_argument("--pattern", required=True, choices=sorted(OPT.KNOWN_TEMPLATES))
     a.add_argument("--id", default=None, help="override the job id")
     a.add_argument("--workspace", default=None, help="project dir (default: [suite].workspace)")

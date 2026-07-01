@@ -58,6 +58,7 @@ def make_workspace(root: Path) -> Path:
     ws.mkdir()
     (ws / "package.json").write_text('{"name":"demo"}', encoding="utf-8")
     (ws / "package-lock.json").write_text("{}", encoding="utf-8")
+    (ws / "README.md").write_text("# Demo\n", encoding="utf-8")  # docs surface → P10
     (ws / ".eslintrc").write_text("{}", encoding="utf-8")
     (ws / "tests").mkdir()
     (ws / "tests" / "t.test.js").write_text("test('x',()=>{})", encoding="utf-8")
@@ -86,6 +87,14 @@ def main() -> int:
         check("integrator installed (project-scoped id)", integ_toml.is_file())
         check("producer sidecars created",
               (autos / "demo-app-coverage-ratchet" / "memory.md").is_file())
+        docs_toml = autos / "demo-app-docs-sync" / "automation.toml"
+        check("P10 docs-sync selected (README present)", docs_toml.is_file(),
+              "expected demo-app-docs-sync to be installed")
+        check("P10 hands off to the integrator + renders the docs-sync body",
+              docs_toml.is_file()
+              and "demo-app-repo-hygiene" in docs_toml.read_text()
+              and "documentation-sync ratchet (P10, producer)" in docs_toml.read_text(),
+              docs_toml.read_text() if docs_toml.is_file() else "missing")
         check("display name is project-prefixed",
               'name = "demo-app ' in integ_toml.read_text(),
               integ_toml.read_text() if integ_toml.is_file() else "missing")

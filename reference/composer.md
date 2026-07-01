@@ -24,6 +24,7 @@ Detect, never assume. Record findings as evidence in the proposal:
 - **Security scanners (for P7)** — dependency audit (`npm audit`/`pip-audit`/`bundler-audit`/`govulncheck`), secret scan (`gitleaks`/`trufflehog`), SAST (`semgrep`/CodeQL). No scanner → P7 is proposed in propose-only mode with a recommendation to enable one.
 - **Complexity signals (for P6)** — linters, duplication/dead-code reports, large-function metrics; plus the test safety net P6 needs to refactor behavior-preservingly.
 - **Instruction files + dev-env config (for P8)** — the canonical instruction file for this agent (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`/`.cursor/rules`) and nearby execution-shaping config (hooks, `.github/workflows/*`, lint/format/editorconfig, settings/permissions). P8 is always proposable; instruction edits route through the integrator, config changes through the approval queue.
+- **Documentation surface (for P10)** — a `README`, a `docs/` tree, an API spec (`openapi`/`swagger`), or a docs generator (`mkdocs`/`docusaurus`/`typedoc`/sphinx/`mdbook`). Present → P10 keeps it in sync with merged code (change-scoped, generator-first, verify-before-write). Absent → P10 is propose-only with a recommendation to add a docs surface. P10 owns *user-facing* docs; the agent-instruction files stay P8's.
 - **Existing automations** — run the optimizer audit so the composer doesn't propose a duplicate of something already present.
 
 ### 2. Propose (evidence-based, no writes to active config)
