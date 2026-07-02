@@ -255,9 +255,29 @@ def _evaluate_job(job_dir: Path, adapter: dict) -> dict | None:
     }
 
 
-def _iter_job_dirs(automations_root: Path) -> list[Path]:
+# Reserved non-job dir names that live under an automations root after the
+# v0.7.x layout (alongside the dotdirs .archive/.disabled/.workspace-locks/.git).
+RESERVED_JOB_DIR_NAMES = frozenset({"suites"})
+
+
+def _is_job_dir(path: Path, adapter: dict) -> bool:
+    """A subdir under an automations root is a job only if it is not a hidden
+    or reserved dir AND actually contains the adapter's job file (codex ->
+    automation.toml, claude -> SKILL.md, gemini -> prompt.md). Mirrors
+    approval_digest.iter_queue_files skipping dot-prefixed dirs."""
+    name = path.name
+    if name.startswith(".") or name in RESERVED_JOB_DIR_NAMES:
+        return False
+    job_file = adapter.get("job_file")
+    if job_file and not (path / job_file).is_file():
+        return False
+    return True
+
+
+def _iter_job_dirs(automations_root: Path, adapter: dict) -> list[Path]:
     try:
-        return sorted(p for p in automations_root.iterdir() if p.is_dir())
+        return sorted(p for p in automations_root.iterdir()
+                       if p.is_dir() and _is_job_dir(p, adapter))
     except OSError:
         return []
 
@@ -279,7 +299,7 @@ def scan_fleet(home: Path) -> dict:
         if not root.is_dir():
             continue
         agents_scanned.append(agent_name)
-        for job_dir in _iter_job_dirs(root):
+        for job_dir in _iter_job_dirs(root, adapter):
             flagged = _evaluate_job(job_dir, adapter)
             if flagged is not None:
                 flagged["agent"] = agent_name

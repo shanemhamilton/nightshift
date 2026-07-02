@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] — 2026-07-01
+
+### Fixed
+- `run_lock.parse_owner` now reads the legacy owner formats still present on the
+  live fleet. It tolerates both `key: value` (v5) and `key=value` (legacy) on
+  read, splitting each line on the first separator only (ISO timestamps stay
+  intact), and normalizes variant field names (`run_token`→`token`,
+  `started_at`→`start`). Writes remain v5-only. This makes `LOCK-EXPIRED`
+  detection accurate for exactly the legacy locks it most needs to catch —
+  previously they read as abandoned/OVERDUE instead of LOCK-EXPIRED. The
+  reclaim safety invariant is unchanged: a lock is only reclaimed when its
+  recorded PID is dead AND its lease has expired, with read-back confirmation.
+- `fleet_health.py` and `fleet_report.py` no longer count reserved non-job
+  directories under `automations/` as phantom jobs. Both now skip dot-prefixed
+  dirs (`.archive`, `.disabled`, `.workspace-locks`, `.git`) and the reserved
+  `suites/` name, and only treat a directory as a job when it contains the
+  adapter's job file (codex → `automation.toml`, claude → `SKILL.md`,
+  gemini → `prompt.md`), mirroring `approval_digest.iter_queue_files`.
+- `lifecycle.py adopt` now wires a producer's `hands_off_to` to the target
+  suite's integrator (parity with `add`) before validation, so adopting a
+  producer into a suite that already has an integrator no longer fails fleet
+  rule 3 ("producer missing 'hands_off_to'") without a hand-edit.
+
 ## [0.7.1] — 2026-07-01
 
 ### Fixed

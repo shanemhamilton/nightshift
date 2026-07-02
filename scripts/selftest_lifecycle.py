@@ -604,6 +604,44 @@ def main() -> int:
         finally:
             PP2.shutil.which = orig_which
 
+        # --- v0.7.2 Fix 3: adopt wires a producer's hands_off_to to the suite's
+        #     integrator (parity with `add`), so adopting a producer no longer
+        #     trips fleet rule 3 ("producer missing 'hands_off_to'").
+        prod_home = root / ".codex-adopt-producer"
+        prod_ws = str(root / "adopt-producer-ws")
+        Path(prod_ws).mkdir()
+        prod_suites = OPT.suites_dir(prod_home)
+        write_manifest(prod_suites / "prod-project.toml", "prod-project", prod_ws,
+                        [_integrator_job("prod-project-integrator", 3)])
+        live_prod_dir = prod_home / "automations" / "prod-job"
+        live_prod_dir.mkdir(parents=True)
+        (live_prod_dir / "automation.toml").write_text(
+            "version = 1\n"
+            'id = "prod-job"\n'
+            'kind = "cron"\n'
+            'name = "Prod Job"\n'
+            "prompt = '''\nProduce things.\n'''\n"
+            'status = "ACTIVE"\n'
+            'rrule = "FREQ=DAILY;BYHOUR=1;BYMINUTE=0;BYSECOND=0"\n'
+            f'cwds = ["{prod_ws}"]\n',
+            encoding="utf-8",
+        )
+        rc_p, out_p = run_lc(["adopt", "--job-id", "prod-job", "--template", "P1",
+                              "--phase", "producer", "--suite", "prod-project",
+                              "--home-override", str(prod_home), "--apply"])
+        check("Fix3 adopt producer --apply exits 0 (fleet rule 3 satisfied)",
+              rc_p == 0, out_p)
+        prod_suite_path = OPT.suite_manifest_path(prod_home, "prod-project")
+        check("Fix3 adopt wrote the producer's suite manifest",
+              prod_suite_path.is_file(), prod_suite_path)
+        if prod_suite_path.is_file():
+            _, prod_jobs = LC.load_suite(prod_suite_path)
+            adopted_prod = LC.find_job(prod_jobs, "prod-job")
+            check("Fix3 adopted producer has hands_off_to == the suite integrator",
+                  adopted_prod is not None
+                  and adopted_prod.get("hands_off_to") == "prod-project-integrator",
+                  adopted_prod)
+
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
 
