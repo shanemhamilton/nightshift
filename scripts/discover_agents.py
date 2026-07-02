@@ -22,6 +22,11 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+# The installed skill dir is named after the skill source folder (install_skill.py
+# copies to <skills_dir>/<SKILL_NAME>), which is the repo root name — e.g.
+# "automation-optimizer" in dev, "nightshift" for a clone of the public repo.
+# Derive it rather than hardcoding so discovery finds the install either way.
+SKILL_NAME = _HERE.parent.name
 _spec = importlib.util.spec_from_file_location("agent_adapters", _HERE / "agent_adapters.py")
 AA = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(AA)  # type: ignore
@@ -119,7 +124,7 @@ def prompt_text_for(job_file: Path, cfg: dict) -> str:
 
 
 def installed_skill_info(cfg: dict, home: Path) -> dict | None:
-    """Inspect <skills_dir>/automation-optimizer for this agent, if any.
+    """Inspect <skills_dir>/<SKILL_NAME> for this agent, if any.
 
     Returns None if the agent has no global skills dir or the skill isn't
     installed there. Otherwise returns {"version", "commit", "installed_at"}
@@ -129,7 +134,7 @@ def installed_skill_info(cfg: dict, home: Path) -> dict | None:
     skills_dir = cfg.get("skills_dir")
     if not skills_dir:
         return None
-    dest = expand(skills_dir, home) / "automation-optimizer"
+    dest = expand(skills_dir, home) / SKILL_NAME
     if not dest.exists():
         return None
 
