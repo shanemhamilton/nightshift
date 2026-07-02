@@ -41,6 +41,10 @@ _fr_spec = importlib.util.spec_from_file_location("fleet_report", FLEET_REPORT_P
 FLEET_REPORT = importlib.util.module_from_spec(_fr_spec)
 _fr_spec.loader.exec_module(FLEET_REPORT)
 
+_rl_spec = importlib.util.spec_from_file_location("run_lock_mod", RUN_LOCK)
+RUN_LOCK_MOD = importlib.util.module_from_spec(_rl_spec)
+_rl_spec.loader.exec_module(RUN_LOCK_MOD)
+
 PASSED = 0
 FAILED = 0
 
@@ -792,6 +796,7 @@ def run_fleet_report_json(home: Path, now: str = FR_NOW) -> tuple[int, dict]:
 def test_fleet_report_exact_rollups(root: Path) -> None:
     home = root / "fr-rollups"
     job = home / ".codex" / "automations" / "job-rollup"
+    _fh_write_toml(job, job_id="job-rollup")
     runs = job / "runs"
 
     _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), units_completed=2,
@@ -817,12 +822,14 @@ def test_fleet_report_zero_units_3x(root: Path) -> None:
     home = root / "fr-zero-units"
 
     fires_job = home / ".codex" / "automations" / "job-zero-fires"
+    _fh_write_toml(fires_job, job_id="job-zero-fires")
     runs_fires = fires_job / "runs"
     _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=1), units_completed=0, suffix="-a")
     _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=2), units_completed=0, suffix="-b")
     _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=3), units_completed=0, suffix="-c")
 
     no_fire_job = home / ".codex" / "automations" / "job-zero-no-fire"
+    _fh_write_toml(no_fire_job, job_id="job-zero-no-fire")
     runs_no_fire = no_fire_job / "runs"
     _fr_run_entry(runs_no_fire, when=_FR_NOW_DT - timedelta(days=1), units_completed=0, suffix="-a")
     _fr_run_entry(runs_no_fire, when=_FR_NOW_DT - timedelta(days=2), units_completed=1, suffix="-b")
@@ -844,6 +851,7 @@ def test_fleet_report_zero_units_3x(root: Path) -> None:
 def test_fleet_report_blocked_ratio(root: Path) -> None:
     home = root / "fr-blocked-ratio"
     job = home / ".codex" / "automations" / "job-blocked-mix"
+    _fh_write_toml(job, job_id="job-blocked-mix")
     runs = job / "runs"
 
     _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), outcome="success",
@@ -867,6 +875,7 @@ def test_fleet_report_blocked_ratio(root: Path) -> None:
 def test_fleet_report_clean_job_no_flags(root: Path) -> None:
     home = root / "fr-clean"
     job = home / ".codex" / "automations" / "job-clean"
+    _fh_write_toml(job, job_id="job-clean")
     runs = job / "runs"
 
     _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), outcome="success",
@@ -883,6 +892,173 @@ def test_fleet_report_clean_job_no_flags(root: Path) -> None:
     check("job-clean present", job_data is not None, str(jobs_by_id))
     check("job-clean has empty flags list",
           job_data is not None and job_data["flags"] == [], str(job_data))
+
+
+# --- v0.7.2 Fix 1: parse_owner tolerates legacy owner formats ----------------
+def _write_owner(lock_dir: Path, body: str) -> None:
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    (lock_dir / "owner").write_text(body, encoding="utf-8")
+
+
+@register("parse_owner reads a legacy run_token=/started_at= owner; ISO timestamps intact")
+def test_parse_owner_legacy_run_token(root: Path) -> None:
+    lock_dir = make_job_dir(root, "legacy-runtoken") / ".automation.lock"
+    _write_owner(
+        lock_dir,
+        "run_token=skincrafter-repo-hygiene-20260701T080124Z-55320\n"
+        "pid=56006\n"
+        "host=shanes.macbook.pro.lan\n"
+        "cwd=/Users/shanehamilton/Documents/SkinCrafter\n"
+        "started_at=2026-07-01T08:01:35Z\n"
+        "lease_until=2026-07-01T10:01:35Z\n",
+    )
+    owner = RUN_LOCK_MOD.parse_owner(lock_dir)
+    check("legacy owner parses (not None)", owner is not None, str(owner))
+    check("run_token normalized to token",
+          owner.get("token") == "skincrafter-repo-hygiene-20260701T080124Z-55320", str(owner))
+    check("pid parsed from = format", owner.get("pid") == "56006", str(owner))
+    check("started_at normalized to start, ISO intact",
+          owner.get("start") == "2026-07-01T08:01:35Z", str(owner))
+    check("lease_until not split on inner colons",
+          owner.get("lease_until") == "2026-07-01T10:01:35Z", str(owner))
+
+
+@register("parse_owner reads a legacy token=/start= owner (equals separator)")
+def test_parse_owner_legacy_equals(root: Path) -> None:
+    lock_dir = make_job_dir(root, "legacy-equals") / ".automation.lock"
+    _write_owner(
+        lock_dir,
+        "token=abc-123\n"
+        "pid=4242\n"
+        "host=h\n"
+        "cwd=/tmp/x\n"
+        "start=2026-07-01T08:00:00Z\n"
+        "lease_until=2026-07-01T09:30:00Z\n",
+    )
+    owner = RUN_LOCK_MOD.parse_owner(lock_dir)
+    check("equals-format owner parses", owner is not None, str(owner))
+    check("token from token=", owner.get("token") == "abc-123", str(owner))
+    check("pid from pid=", owner.get("pid") == "4242", str(owner))
+    check("lease_until ISO intact", owner.get("lease_until") == "2026-07-01T09:30:00Z", str(owner))
+
+
+@register("legacy-format lock with dead pid + past lease is reclaimable")
+def test_reclaim_legacy_abandoned(root: Path) -> None:
+    job_dir = make_job_dir(root, "legacy-abandoned")
+    lock_dir = job_dir / ".automation.lock"
+    now = datetime.now(timezone.utc)
+    _write_owner(
+        lock_dir,
+        "run_token=legacy-dead-token\n"
+        "pid=999999\n"
+        "host=h\n"
+        "cwd=/tmp\n"
+        f"started_at={(now - timedelta(minutes=70)).isoformat()}\n"
+        f"lease_until={(now - timedelta(minutes=10)).isoformat()}\n",
+    )
+    result = run_lock("reclaim", str(job_dir))
+    check("legacy reclaim exit 0", result.returncode == 0, result.stdout + result.stderr)
+    check("legacy reclaim RECLAIMED", result.stdout.startswith("RECLAIMED"), result.stdout)
+    check("old_token recovered from run_token=",
+          "old_token=legacy-dead-token" in result.stdout, result.stdout)
+
+
+@register("legacy-format lock defers reclaim while pid is live OR lease is in the future")
+def test_reclaim_legacy_not_abandoned(root: Path) -> None:
+    now = datetime.now(timezone.utc)
+
+    # (i) live pid (this process) + past lease -> still live -> DEFER.
+    live_job = make_job_dir(root, "legacy-live-pid")
+    live_lock = live_job / ".automation.lock"
+    _write_owner(
+        live_lock,
+        "run_token=legacy-live-token\n"
+        f"pid={os.getpid()}\n"
+        f"started_at={(now - timedelta(minutes=70)).isoformat()}\n"
+        f"lease_until={(now - timedelta(minutes=5)).isoformat()}\n",
+    )
+    r_live = run_lock("reclaim", str(live_job))
+    check("legacy live-pid reclaim defers (exit 2)", r_live.returncode == 2, r_live.stdout)
+    check("legacy live-pid lock left in place", (live_lock / "owner").is_file())
+
+    # (ii) dead pid + future lease -> lease not expired -> DEFER.
+    future_job = make_job_dir(root, "legacy-future-lease")
+    future_lock = future_job / ".automation.lock"
+    _write_owner(
+        future_lock,
+        "run_token=legacy-future-token\n"
+        "pid=999999\n"
+        f"started_at={(now - timedelta(minutes=1)).isoformat()}\n"
+        f"lease_until={(now + timedelta(minutes=60)).isoformat()}\n",
+    )
+    r_future = run_lock("reclaim", str(future_job))
+    check("legacy future-lease reclaim defers (exit 2)", r_future.returncode == 2, r_future.stdout)
+    check("legacy future-lease lock left in place", (future_lock / "owner").is_file())
+
+
+@register("v5 key: value owners still parse unchanged (no regression)")
+def test_parse_owner_v5_unchanged(root: Path) -> None:
+    lock_dir = make_job_dir(root, "v5-owner") / ".automation.lock"
+    lease = datetime.now(timezone.utc) + timedelta(minutes=60)
+    craft_owner_file(lock_dir, pid=4242, lease_until=lease, token="v5-token")
+    owner = RUN_LOCK_MOD.parse_owner(lock_dir)
+    check("v5 owner parses", owner is not None, str(owner))
+    check("v5 token unchanged", owner.get("token") == "v5-token", str(owner))
+    check("v5 pid unchanged", owner.get("pid") == "4242", str(owner))
+    check("v5 lease_until ISO intact",
+          owner.get("lease_until") == lease.isoformat(), str(owner))
+    check("v5 cwd preserved", owner.get("cwd") == "/tmp/test", str(owner))
+
+
+# --- v0.7.2 Fix 2: reserved non-job dirs are not counted as jobs -------------
+@register("fleet_health & fleet_report ignore reserved suites/.archive/.disabled dirs; "
+          "only real job dirs are counted")
+def test_reserved_dirs_not_counted_as_jobs(root: Path) -> None:
+    home = root / "reserved-dirs-home"
+    autos = home / ".codex" / "automations"
+    now = datetime.now(timezone.utc)
+
+    # Two real, clean jobs (each has automation.toml — the job_file).
+    for jid in ("real-job-one", "real-job-two"):
+        job = autos / jid
+        _fh_write_toml(job, job_id=jid)
+        _fh_write_last_run(job, when=now)
+        (job / "runs").mkdir(parents=True, exist_ok=True)
+        _fr_run_entry(job / "runs", when=_FR_NOW_DT - timedelta(days=1),
+                      units_completed=1, suffix="-x")
+        (job / "memory.md").write_text("small\n", encoding="utf-8")
+
+    # Reserved non-job dirs that must NOT be counted as jobs.
+    (autos / "suites").mkdir(parents=True, exist_ok=True)
+    (autos / "suites" / "some-project.toml").write_text(
+        '[suite]\nproject = "x"\n', encoding="utf-8")
+    (autos / ".archive" / "old-job").mkdir(parents=True, exist_ok=True)
+    (autos / ".archive" / "old-job" / "automation.toml").write_text(
+        "version = 1\n", encoding="utf-8")
+    (autos / ".disabled" / "off-job").mkdir(parents=True, exist_ok=True)
+    (autos / ".disabled" / "off-job" / "automation.toml").write_text(
+        "version = 1\n", encoding="utf-8")
+    (autos / ".workspace-locks").mkdir(parents=True, exist_ok=True)
+
+    # fleet_health: reserved dirs never surface as (flagged) jobs. Real jobs
+    # are clean, so a healthy fleet here proves the reserved dirs produced no
+    # phantom flags (pre-fix, suites/ flagged BLANK-LASTRUN + EMPTY-RUNS).
+    rc_h, health = run_fleet_health_json(home)
+    health_ids = {j["id"] for j in health["jobs"]}
+    check("fleet_health is clean (no phantom flags from reserved dirs)",
+          rc_h == 0 and health["summary"]["jobs_flagged"] == 0, str(health))
+    for reserved in ("suites", "old-job", "off-job", ".archive", ".disabled",
+                     ".workspace-locks"):
+        check(f"fleet_health did not flag reserved '{reserved}'",
+              reserved not in health_ids, str(health_ids))
+
+    # fleet_report: exactly the two real jobs are reported, nothing else.
+    _, report = run_fleet_report_json(home)
+    report_ids = {j["id"] for j in report["jobs"]}
+    check("fleet_report counts exactly the two real jobs",
+          report_ids == {"real-job-one", "real-job-two"}, str(report_ids))
+    check("fleet_report jobs_total == 2 (no phantom job rows)",
+          report["summary"]["jobs_total"] == 2, str(report["summary"]))
 
 
 def main() -> int:

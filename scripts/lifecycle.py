@@ -382,6 +382,14 @@ def cmd_adopt(args) -> int:
     else:
         job["prompt_hash"] = hashlib.sha256(live_prompt.encode("utf-8")).hexdigest()[:16]
 
+    # A producer must hand off to the suite's integrator (fleet rule 3), same
+    # as cmd_add. Only set it when the target suite already has an integrator
+    # and no explicit handoff was drafted.
+    if job.get("phase") == "producer" and "hands_off_to" not in job:
+        integ = integrator_id(jobs)
+        if integ:
+            job["hands_off_to"] = integ
+
     candidate_jobs = jobs + [job]
     if validate(suite, candidate_jobs) != 0:
         print("\nAdopting this job breaks the fleet; not written.")

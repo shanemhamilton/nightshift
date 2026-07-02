@@ -82,21 +82,58 @@ def is_pid_alive(pid: int) -> bool:
     return True
 
 
+# Legacy owner files still on the live fleet used `key=value` with variant
+# field names. Map those variants onto the canonical keys the rest of run_lock
+# reads (token/pid/host/cwd/start/lease_until). WRITES stay v5-only (see
+# write_owner); only READS tolerate the legacy shapes.
+_OWNER_KEY_ALIASES = {
+    "run_token": "token",
+    "started_at": "start",
+}
+
+
+def _split_owner_line(line: str) -> tuple[str, str] | None:
+    """Split one owner line into (key, value) on the FIRST separator only —
+    either `key: value` (v5) or `key=value` (legacy), whichever character
+    appears first. Splitting on the first separator keeps ISO timestamps
+    (which contain their own colons) intact."""
+    colon = line.find(":")
+    equals = line.find("=")
+    positions = [i for i in (colon, equals) if i != -1]
+    if not positions:
+        return None
+    sep = min(positions)
+    return line[:sep].strip(), line[sep + 1:].strip()
+
+
 def parse_owner(lock_dir: Path) -> dict | None:
-    """Leniently read `<lock_dir>/owner` into a dict. None if missing/unreadable."""
+    """Leniently read `<lock_dir>/owner` into a dict. None if missing/unreadable.
+
+    Tolerant of BOTH the v5 `key: value` format and the legacy `key=value`
+    format still present on the fleet, normalizing variant field names
+    (run_token->token, started_at->start) so is_abandoned / reclaim read the
+    canonical keys regardless of which shape wrote the file."""
     owner_path = lock_dir / OWNER_FILE_NAME
     if not owner_path.is_file():
         return None
-    data: dict[str, str] = {}
     try:
         text = owner_path.read_text(encoding="utf-8")
     except OSError:
         return None
+    raw: dict[str, str] = {}
     for line in text.splitlines():
-        if ":" not in line:
+        parsed = _split_owner_line(line)
+        if parsed is None:
             continue
-        key, _, value = line.partition(":")
-        data[key.strip()] = value.strip()
+        key, value = parsed
+        if key:
+            raw[key] = value
+    if not raw:
+        return None
+    data = dict(raw)
+    for alias, canonical in _OWNER_KEY_ALIASES.items():
+        if alias in raw and canonical not in raw:
+            data[canonical] = raw[alias]
     return data or None
 
 
