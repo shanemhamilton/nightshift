@@ -20,6 +20,7 @@ scaffold_suite.py and lifecycle.py share one copy and never drift.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 from pathlib import Path
 
@@ -53,11 +54,18 @@ def _q(s: str) -> str:
 
 def cron_to_rrule(schedule: str) -> str:
     """Convert a simple 5-field cron (m h dom mon dow) to an iCalendar RRULE.
-    Handles the common nightly/weekly cases the composer emits."""
+    Handles the common nightly/weekly/monthly cases the composer emits:
+      - dom numeric, dow "*"  -> FREQ=MONTHLY;BYMONTHDAY=<dom>
+      - dow set (dom "*")     -> FREQ=WEEKLY;BYDAY=...
+      - dom "*" and dow "*"   -> FREQ=DAILY
+    Schedules using syntax this can't faithfully represent (step values,
+    ranges, lists in minute/hour, a non-"*" month) still fall through to one
+    of the above best-effort conversions — see cron_unsupported() for
+    detecting fidelity loss so callers can surface a warning."""
     parts = (schedule or "").split()
     if len(parts) != 5:
         return "FREQ=DAILY;BYHOUR=3;BYMINUTE=0;BYSECOND=0"
-    m, h, _dom, _mon, dow = parts
+    m, h, dom, _mon, dow = parts
     minute = m if m.isdigit() else "0"
     hour = h if h.isdigit() else "3"
     if dow != "*":
@@ -65,15 +73,100 @@ def cron_to_rrule(schedule: str) -> str:
                 "4": "TH", "5": "FR", "6": "SA"}
         byday = ",".join(days.get(d, "MO") for d in dow.split(","))
         return f"FREQ=WEEKLY;BYDAY={byday};BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
+    if dom != "*" and dom.isdigit():
+        return f"FREQ=MONTHLY;BYMONTHDAY={dom};BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
     return f"FREQ=DAILY;BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
+
+
+_CRON_FIELD_UNSUPPORTED_RE = re.compile(r"[*/,-]")
+
+
+def cron_unsupported(schedule: str) -> str | None:
+    """Return a human message when `schedule` uses cron syntax cron_to_rrule
+    can't faithfully represent, else None. Never raises.
+
+    Flags: a non-"*" month field, step values (`*/2`), ranges (`1-5`), or
+    lists in the minute/hour fields. dom/dow lists and steps are also
+    flagged since only a single numeric dom or a comma-list of plain dow
+    digits is handled faithfully."""
+    parts = (schedule or "").split()
+    if len(parts) != 5:
+        return f"schedule {schedule!r} is not a 5-field cron expression; using a default"
+    minute, hour, dom, mon, dow = parts
+
+    def _has_step_or_range(field: str) -> bool:
+        return "/" in field or "-" in field
+
+    problems = []
+    if _has_step_or_range(minute) or (minute != "*" and "," in minute):
+        problems.append(f"minute field {minute!r} (steps/ranges/lists unsupported)")
+    if _has_step_or_range(hour) or (hour != "*" and "," in hour):
+        problems.append(f"hour field {hour!r} (steps/ranges/lists unsupported)")
+    if _has_step_or_range(dom) or (dom != "*" and "," in dom):
+        problems.append(f"day-of-month field {dom!r} (steps/ranges/lists unsupported)")
+    if mon != "*":
+        problems.append(f"month field {mon!r} (non-'*' month is unsupported)")
+    if _has_step_or_range(dow):
+        problems.append(f"day-of-week field {dow!r} (steps/ranges unsupported)")
+
+    if not problems:
+        return None
+    return f"cron {schedule!r} uses syntax the RRULE converter can't faithfully represent: " \
+           + "; ".join(problems)
+
+
+_RRULE_DAY_TO_DOW = {"SU": "0", "MO": "1", "TU": "2", "WE": "3",
+                     "TH": "4", "FR": "5", "SA": "6"}
+_RRULE_PART_RE = re.compile(r"([A-Z]+)=([^;]*)")
+_FALLBACK_CRON = "0 3 * * *"
+
+
+def rrule_to_cron(rrule: str) -> str:
+    """Convert a simple iCalendar RRULE string to a 5-field cron (m h dom mon dow).
+    Inverse of cron_to_rrule for the cases it emits. Never raises — unparseable
+    or unknown-FREQ input falls back to the same default cron_to_rrule uses."""
+    if not isinstance(rrule, str) or not rrule:
+        return _FALLBACK_CRON
+    parts = dict(_RRULE_PART_RE.findall(rrule))
+    freq = parts.get("FREQ", "")
+    hour = parts.get("BYHOUR", "3")
+    minute = parts.get("BYMINUTE", "0")
+    hour = hour if hour.isdigit() else "3"
+    minute = minute if minute.isdigit() else "0"
+
+    if freq == "DAILY":
+        return f"{minute} {hour} * * *"
+    if freq == "WEEKLY":
+        byday = parts.get("BYDAY", "")
+        days = [d for d in byday.split(",") if d in _RRULE_DAY_TO_DOW]
+        if not days:
+            return _FALLBACK_CRON
+        dow = ",".join(sorted(_RRULE_DAY_TO_DOW[d] for d in days))
+        return f"{minute} {hour} * * {dow}"
+    return _FALLBACK_CRON
+
+
+_HAIKU_RE = re.compile(r"haiku", re.IGNORECASE)
 
 
 def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None,
                     project: str | None = None) -> str:
-    """Emit a real Codex automation.toml (version/id/kind/name/prompt/status/rrule/cwds)."""
+    """Emit a real Codex automation.toml (version/id/kind/name/prompt/status/rrule/cwds).
+
+    model precedence:            `model` PARAMETER > job.get("model") > DEFAULTS[template].get("model")
+    reasoning_effort precedence: job.get("reasoning_effort") > DEFAULTS[template].get("reasoning_effort")
+    Never emits a Haiku-class model (Sonnet is the floor) — raises ValueError instead.
+    """
     if "'''" in prompt:  # literal triple-quote can't contain '''
         raise ValueError(f"{job.get('id')}: prompt contains ''' and can't be emitted")
     name = naming.display_name(job, project)
+    defaults = DEFAULTS.get(job["template"], {})
+    resolved_model = model or job.get("model") or defaults.get("model")
+    if resolved_model and _HAIKU_RE.search(resolved_model):
+        raise ValueError(f"{job['id']}: refusing to emit a Haiku-class model ({resolved_model})")
+    resolved_effort = job.get("reasoning_effort") or defaults.get("reasoning_effort")
+    schedule = job.get("schedule", "")
+    warning = cron_unsupported(schedule)
     lines = [
         "version = 1",
         f"id = {_q(job['id'])}",
@@ -85,12 +178,18 @@ def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None,
         prompt,
         "'''",
         'status = "ACTIVE"',
-        f"rrule = {_q(cron_to_rrule(job.get('schedule', '')))}",
+        f"rrule = {_q(cron_to_rrule(schedule))}",
+    ]
+    if warning:
+        lines.append(f"# schedule-warning: {warning}")
+    lines += [
         f"execution_environment = {_q(job.get('execution_environment', 'local'))}",
         f"cwds = [{_q(cwd)}]",
     ]
-    if model or job.get("model"):
-        lines.append(f"model = {_q(model or job['model'])}")
+    if resolved_model:
+        lines.append(f"model = {_q(resolved_model)}")
+    if resolved_effort:
+        lines.append(f"reasoning_effort = {_q(resolved_effort)}")
     return "\n".join(lines) + "\n"
 
 

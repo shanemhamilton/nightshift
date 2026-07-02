@@ -189,13 +189,42 @@ def detect(root: Path) -> dict:
         caps["evidence"]["ui_driver"] = f"web e2e harness ({web_e2e})"
 
     # security scanner for P7
-    lockfile = _exists(root, "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-                       "Gemfile.lock", "poetry.lock", "go.sum", "Cargo.lock")
+    # npm audit ships with npm itself, so any JS lockfile qualifies unconditionally.
+    npm_lockfile = _exists(root, "package-lock.json", "yarn.lock", "pnpm-lock.yaml")
+    # For python/ruby/go/rust there is no bundled audit command — a lockfile alone
+    # doesn't mean scanning is possible. Only claim the capability when the actual
+    # audit tool is on PATH, and name that tool (not just the lockfile) as evidence.
+    ECOSYSTEM_AUDIT_TOOLS = {
+        "Gemfile.lock": ("bundler-audit", "bundle-audit"),
+        "poetry.lock": ("pip-audit",),
+        "requirements.txt": ("pip-audit",),
+        "pyproject.toml": ("pip-audit",),
+        "go.sum": ("govulncheck",),
+        "Cargo.lock": ("cargo-audit",),
+    }
+    audited_lockfile = None
+    audited_tool = None
+    for fname, tools in ECOSYSTEM_AUDIT_TOOLS.items():
+        if not (root / fname).exists():
+            continue
+        found_tool = next((t for t in tools if _which(t)), None)
+        if found_tool:
+            audited_lockfile = fname
+            audited_tool = found_tool
+            break
     secret_scan = _which("gitleaks") or _which("trufflehog") or _exists(root, ".gitleaks.toml")
     sast = _which("semgrep") or _exists(root, ".semgrep.yml", ".semgrep")
-    scanner_ev = lockfile and f"dependency audit ({lockfile})" or \
-        (secret_scan and "secret scanner") or (sast and "SAST (semgrep)")
-    caps["security_scanner"] = bool(lockfile or secret_scan or sast)
+    if npm_lockfile:
+        scanner_ev = f"npm audit (lockfile: {npm_lockfile})"
+    elif audited_tool:
+        scanner_ev = f"{audited_tool} on PATH"
+    elif secret_scan:
+        scanner_ev = "secret scanner"
+    elif sast:
+        scanner_ev = "SAST (semgrep)"
+    else:
+        scanner_ev = None
+    caps["security_scanner"] = bool(npm_lockfile or audited_tool or secret_scan or sast)
     if scanner_ev:
         caps["evidence"]["security_scanner"] = scanner_ev
 
@@ -344,6 +373,33 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
                                   ".cursor/rules", ".claude/**", "**/memory.md"],
                      params={"lookback_hours": 24, "max_edits": 3}))
     return jobs, skipped
+
+
+# --- project-queue scaffold ---------------------------------------------------
+PROJECT_QUEUE_TEMPLATE = """# Project queue — {project}
+
+## Objectives
+_Human-editable. What this project's automations should drive toward. One bullet each._
+- (add objectives here)
+
+## Open threads
+_Machine-maintained by automations (escalation/closeout). One `### <thread-id>` block per open thread; fields: owner_job, status (open|parked|resolved), next_action, first_seen (ISO date)._
+"""
+
+
+def scaffold_project_queue(workspace: Path, project: str) -> Path | None:
+    """Ensure `<workspace>/.codex/automations/PROJECT-QUEUE.md` exists.
+
+    Writes the scaffold ONLY if the file is not already there — never overwrites
+    human-edited objectives or machine-maintained open threads. Returns the path
+    when it created the file, None when it already existed.
+    """
+    path = Path(workspace) / ".codex" / "automations" / "PROJECT-QUEUE.md"
+    if path.exists():
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(PROJECT_QUEUE_TEMPLATE.format(project=project), encoding="utf-8")
+    return path
 
 
 # --- project-scope ids + display names ---------------------------------------
@@ -505,6 +561,9 @@ def cmd_profile(args) -> int:
         outp.write_text(toml_text, encoding="utf-8")
         print(f"Wrote draft suite → {outp}\n")
         print(rationale)
+        scaffolded = scaffold_project_queue(root, root.name)
+        if scaffolded:
+            print(f"scaffolded {scaffolded}")
         print(f"\nNext: validate with  optimize_codex_automations.py --fleet {outp}")
         print(f"Then: confirm with   profile_project.py approve --suite {outp}")
     else:

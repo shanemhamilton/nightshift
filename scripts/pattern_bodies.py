@@ -16,17 +16,27 @@ from __future__ import annotations
 # closeout (it still stops early on diminishing returns, repeated failure, or an
 # empty queue). Reflectors (P5/P8) keep a deliberately low edit cap — for them
 # "more loops" means reviewing more signals, not making more changes.
+#
+# `reasoning_effort` is an OPTIONAL per-template hint consumed by
+# agent_materializers.emit_codex_toml (precedence: job param > job.get > this
+# default). Only set it where the pattern's judgment load warrants it — P3
+# (sole merge authority, must classify conflicts correctly) and P7 (security
+# triage) get "high"; P9 and P10 are mechanical/low-judgment and get "low";
+# every other pattern is left UNSET so the CLI/job default applies. Do not add
+# a `model` key here by default — model selection stays with the CLI/job.
 DEFAULTS = {
     "P1": {"coverage_floor": 75, "max_units": 5},
     "P2": {"max_loops": 10},
-    "P3": {"default_branch": "main", "clean_after": True},
+    "P3": {"default_branch": "main", "clean_after": True, "reasoning_effort": "high"},
     "P4": {"safe_fix_only": True, "max_units": 5},
     "P5": {"lookback_hours": 24},
     "P6": {"max_changesets": 5},
-    "P7": {"auto_fix_max_severity": "low", "escalate_at_or_above": "high", "max_units": 5},
+    "P7": {"auto_fix_max_severity": "low", "escalate_at_or_above": "high", "max_units": 5,
+           "reasoning_effort": "high"},
     "P8": {"lookback_hours": 24, "max_edits": 3, "config_changes_need_approval": True},
-    "P9": {},  # cross-project digest: no tunable caps; channels are flags on the script
-    "P10": {"max_docsets": 5, "require_doc_build": True, "include_inline_docstrings": False},
+    "P9": {"reasoning_effort": "low"},  # cross-project digest: no tunable caps; channels are flags on the script
+    "P10": {"max_docsets": 5, "require_doc_build": True, "include_inline_docstrings": False,
+            "reasoning_effort": "low"},
 }
 
 BODIES = {
@@ -36,7 +46,8 @@ Goal: raise meaningful automated-test protection, then improve test quality. You
 2. If aggregate coverage < {coverage_floor}%: spend this unit on the highest-impact UNCOVERED behavior (high blast radius, no current protection). Add real tests on a branch; never weaken assertions to pass. Open a tracker ticket and hand the branch to '{integrator}'.
 3. If aggregate coverage >= {coverage_floor}%: stop hunting new coverage. Improve quality instead — delete or rewrite weak/tautological tests, add mutation-style proof that tests catch regressions, and tighten quality gates. Tightening is always allowed; loosening a gate requires re-confirmation.
 4. Then keep going: pick the next-highest-impact independent target and repeat steps 2-3 for up to {max_units} units this run, stopping early on diminishing returns, two consecutive blocked units, or an empty target list.
-5. Evidence per unit = test names + coverage delta + mutation results. Respect the run budget.""",
+5. Evidence per unit = test names + coverage delta + mutation results. Respect the run budget.
+6. If a dirty primary checkout has blocked this target on consecutive runs, do the unit in an isolated `git worktree add <scratch> origin/<default_branch>` and hand off the branch; never reset or clean the user's working tree.""",
 
 "P2": """## Task — product-value explore/fix/confirm loop (P2, producer)
 Goal: find and fix real user-facing issues by driving the running app. You do NOT merge; hand confirmed fixes to '{integrator}'.
@@ -44,12 +55,13 @@ Goal: find and fix real user-facing issues by driving the running app. You do NO
 2. Stop at the FIRST confirmed user-facing issue, then fix that one issue.
 3. Relaunch and replay the exact path to PROVE the fix worked before continuing.
 4. Loop: after a confirmed+replayed fix, explore for the next issue. Do up to {max_loops} explore/fix/confirm cycles this run; stop early on two consecutive cycles that find nothing or cannot confirm a fix. Record the stop reason.
-5. Each confirmed fix goes to a branch + ticket handed to '{integrator}'; it merges only when project gates pass. Evidence = the replay result.""",
+5. Each confirmed fix goes to a branch + ticket handed to '{integrator}'; it merges only when project gates pass. Evidence = the replay result.
+6. If a dirty primary checkout has blocked landing a fix's branch on consecutive runs, build and verify it in an isolated `git worktree add <scratch> origin/<default_branch>` and hand off the branch from there; never reset or clean the user's working tree.""",
 
 "P3": """## Task — repo-hygiene integrator (P3, integrator, SOLE MERGE AUTHORITY)
 Goal: turn the night's produced work into a clean '{default_branch}'. You are the only job that merges.
-1. Drain the handoff queue: loop over EVERY branch/ticket handed off this night and merge to '{default_branch}' each one that is safely mergeable (gates pass, no conflicts, clear ownership), then push. Producers now do multiple units per night, so expect several handoffs — keep merging until the queue is empty or no remaining item is safely mergeable. A long producer night that you cannot fully drain gets finished on the next integrator run.
-2. Clean the repo so future work starts from a clean '{default_branch}'.
+1. Drain the handoff queue: loop over EVERY branch/ticket handed off this night and merge to '{default_branch}' each one that is safely mergeable (gates pass, no conflicts, clear ownership), then push. Producers now do multiple units per night, so expect several handoffs — keep merging until the queue is empty or no remaining item is safely mergeable. A long producer night that you cannot fully drain gets finished on the next integrator run. You merge from producer branches REGARDLESS of the primary checkout's dirt — you operate on those branches (or your own clean checkout), never on the user's working tree, so a dirty primary checkout never blocks a drain.
+2. Clean the repo so future work starts from a clean '{default_branch}', and prune stale automation worktrees (`git worktree remove`) once their branch has merged.
 3. If code cannot be safely merged, classify exactly why (conflict | failing gate | ambiguous ownership | blocked) and leave a concrete tracker follow-up. Never force a merge.
 4. Anything irreversible beyond a normal gated merge (history rewrite, force-push, deploy) goes to the approval queue, not executed.
 If you cannot detect the 'gates pass' signal, operate in shadow: write what you WOULD merge to the approval queue instead of merging.""",
@@ -57,22 +69,25 @@ If you cannot detect the 'gates pass' signal, operate in shadow: write what you 
 "P4": """## Task — leftover resolver (P4, janitor)
 Runs after the producers and the integrator. Goal: clear what they left behind. You do NOT hold merge authority.
 1. Look for leftovers: dirty files, WIP branches, failed checks, merge conflicts, ambiguous ownership, blocked work.
-2. Resolve them in a loop, highest-value first, for up to {max_units} leftovers this run. For each: if it can be safely fixed, verified, committed, and merged WITHOUT triggering production, do it (route the merge through the integrator's gate, or queue it if the integrator already finished). If not, record the blocker and exactly ONE concrete next action as a tracker ticket.
-3. Stop early when nothing actionable remains or two consecutive leftovers are blocked; record the stop reason.
-4. Never 'fix' something a producer will simply regenerate; if you see that loop, escalate it to the reflector instead of ping-ponging.""",
+2. For every leftover dirty file, CLASSIFY it before touching it — automation-produced (safe to resolve), the user's unsaved work-in-progress (never touch), or generated/ignorable (build output, caches) — and record the likely owner. When a file could plausibly be the user's uncommitted work, treat it as such: never delete or revert it; queue it for a human to review instead.
+3. Resolve the automation-owned leftovers in a loop, highest-value first, for up to {max_units} leftovers this run. For each: if it can be safely fixed, verified, committed, and merged WITHOUT triggering production, do it (route the merge through the integrator's gate, or queue it if the integrator already finished). If not, record the blocker and exactly ONE concrete next action as a tracker ticket.
+4. Stop early when nothing actionable remains or two consecutive leftovers are blocked; record the stop reason.
+5. Never 'fix' something a producer will simply regenerate; if you see that loop, escalate it to the reflector instead of ping-ponging.""",
 
 "P5": """## Task — collaboration meta-learner (P5, reflector)
 Runs last. Goal: improve how the agent works with the user over time. Bias hard toward NO change.
-1. Review the last {lookback_hours}h of run ledgers and interactions for repeated shorthand, misunderstandings, slow feedback loops, over-broad checks, missed repo boundaries, repeated verification gaps, or stale deploy assumptions.
-2. Prefer memory notes. Edit AGENTS.md / canonical instructions ONLY when the lesson is durable, project-specific, not already documented, and likely to prevent a repeated mistake.
-3. Prefer no change over noisy daily churn: at most a few high-signal edits per run; everything else stays a memory note. Canonical edits go through the integrator's gate. For you, "use the night well" means review the FULL lookback window thoroughly, not make more edits — the low edit cap is intentional.""",
+1. Read the FLEET REPORT (`~/.codex/FLEET-REPORT.md`, produced by fleet_report.py) when it exists, instead of hand-parsing raw run ledgers — it is the cheaper, pre-aggregated view across the fleet. Fall back to the last {lookback_hours}h of raw run ledgers and interactions only when the report is absent.
+2. Review that window for repeated shorthand, misunderstandings, slow feedback loops, over-broad checks, missed repo boundaries, repeated verification gaps, or stale deploy assumptions.
+3. Prefer memory notes. Edit AGENTS.md / canonical instructions ONLY when the lesson is durable, project-specific, not already documented, and likely to prevent a repeated mistake.
+4. Prefer no change over noisy daily churn: at most a few high-signal edits per run; everything else stays a memory note. Canonical edits go through the integrator's gate. For you, "use the night well" means review the FULL lookback window thoroughly, not make more edits — the low edit cap is intentional.""",
 
 "P6": """## Task — code-simplification ratchet (P6, producer)
 Goal: reduce complexity WITHOUT changing behavior. You do NOT merge; hand work to '{integrator}'.
 1. Discover the test/coverage commands and a complexity signal (linter warnings, duplication, long/large functions, unused symbols).
 2. Pick the highest-value BEHAVIOR-PRESERVING simplification that has a test safety net. Prefer small, independently reviewable changesets.
 3. Prove behavior is unchanged: tests stay green, no public API/contract change, no gate weakened. A simplification that needs a test changed to pass is NOT behavior-preserving — discard it. Never delete a test to 'simplify' (that is P1's job).
-4. Loop: pick the next-highest-value behavior-preserving simplification and repeat. Up to {max_changesets} changesets this run; each goes to a branch + ticket handed to '{integrator}'. Stop early when no proven-safe simplification remains or two consecutive candidates can't be proven behavior-preserving; record the stop reason. Evidence per changeset = complexity delta + green suite.""",
+4. Loop: pick the next-highest-value behavior-preserving simplification and repeat. Up to {max_changesets} changesets this run; each goes to a branch + ticket handed to '{integrator}'. Stop early when no proven-safe simplification remains or two consecutive candidates can't be proven behavior-preserving; record the stop reason. Evidence per changeset = complexity delta + green suite.
+5. If a dirty primary checkout has blocked a changeset on consecutive runs, prove it behavior-preserving in an isolated `git worktree add <scratch> origin/<default_branch>` and hand off the branch; never reset or clean the user's working tree.""",
 
 "P7": """## Task — code-security sweep (P7, producer, escalating)
 Goal: find and remediate security issues. You do NOT merge; hand safe fixes to '{integrator}'.
@@ -80,7 +95,8 @@ Goal: find and remediate security issues. You do NOT merge; hand safe fixes to '
 2. Loop over the safe, low-risk findings up to severity '{auto_fix_max_severity}' (e.g. a dependency bump whose gates pass, no behavior change): fix up to {max_units} of them this run, each on a branch + ticket handed to '{integrator}'. Stop early when none remain or two consecutive fixes fail their gate; record the stop reason. Escalations (step 3) are queued, not fixed, and never count against this budget.
 3. Anything at or above '{escalate_at_or_above}', or touching auth, secrets, crypto, or security config, goes to the approval queue — NEVER auto-merged, even if gates pass.
 4. Leaked secrets: record location and type ONLY, never the value; open a high-priority ticket and queue rotation for a human.
-5. Never weaken a security gate to make a scan pass. Evidence = finding ids + severity + remediation, secrets redacted.""",
+5. Never weaken a security gate to make a scan pass. Evidence = finding ids + severity + remediation, secrets redacted.
+6. If a dirty primary checkout has blocked a safe fix on consecutive runs, apply and verify it in an isolated `git worktree add <scratch> origin/<default_branch>` and hand off the branch; never reset or clean the user's working tree.""",
 
 "P8": """## Task — dev-environment self-reflection (P8, reflector)
 Runs last, alongside P5. Goal: keep THIS agent's instruction files and dev tooling current with how the project is actually worked. Bias hard toward NO change.
@@ -96,7 +112,8 @@ Runs last, after every project's reflectors. Goal: collapse all pending human de
 2. Read the generated digest. Sanity-check it against the live queues: confirm the counts match, every item carries an action, and nothing high-risk was mis-bucketed as safe-to-batch. If the script flagged malformed items, leave them under its `Needs cleanup` section — do not guess their risk.
 3. Do NOT approve, merge, deploy, or act on any item — surfacing is your whole job; the human decides. The only writes you make are the digest file and, if configured, a local notification.
 4. External delivery (email/Slack) stays OFF unless the operator has configured a channel AND approved it. If a channel is configured, pass `--channel <name>` and let the script enforce the opt-in; never send externally on your own initiative.
-5. Evidence = the digest path, item counts per bucket, and the notification status. Keep memory to a one-line trend (counts over time), never the decisions themselves.""",
+5. After running the digest engine, also run `fleet_health.py` and INCLUDE its flags (expired locks, overdue/empty/blank jobs, oversized memory) in the morning review — surface them alongside the approval digest; you have no merge authority and no config-editing role, so you do not act on them yourself.
+6. Evidence = the digest path, item counts per bucket, the fleet-health flags surfaced, and the notification status. Keep memory to a one-line trend (counts over time), never the decisions themselves.""",
 
 "P10": """## Task — documentation-sync ratchet (P10, producer)
 Goal: keep project documentation in sync with the code that has actually landed on the default branch — accurately and without churn. You do NOT merge; hand doc updates to '{integrator}'. You edit ONLY user-facing documentation (README, docs/, API reference, CHANGELOG) — never source code, and never the agent-instruction files (CLAUDE.md / AGENTS.md / GEMINI.md / .cursor/rules); those belong to P8.
@@ -105,5 +122,6 @@ Goal: keep project documentation in sync with the code that has actually landed 
 3. Ground EVERY statement in current code before writing. Code is the source of truth: when a doc disagrees with the code, fix the doc to match the code (never the reverse). Every symbol, path, flag, command, signature, or example you write MUST be verified to exist in the current tree (grep / symbol lookup) — never invent an API, file path, or example. If you cannot verify a claim, remove or flag it; do not guess.
 4. Loop, highest-drift first: correct the most out-of-date doc unit, then the next, for up to {max_docsets} independent doc units this run. Each goes to a branch + ticket handed to '{integrator}'; doc changes are behavior-neutral and merge the same night when gates pass. Stop early when no covered code has drifted or two consecutive units have nothing to correct; record the stop reason.
 5. Gate on the docs build when one exists: if require_doc_build is {require_doc_build} and a doc build / link-check is detectable, it MUST pass before handoff — a doc change that breaks the build or a cross-reference is not done. Inline docstrings and code comments stay OUT of scope unless include_inline_docstrings is {include_inline_docstrings}, because editing them touches source files (P6's territory for behavior, P10 only when explicitly enabled).
-6. Evidence per unit = the doc diff + the exact code refs (path:symbol) each change is grounded in + generator / doc-build status. Keep memory to fingerprints + a drift count, never doc contents.""",
+6. Evidence per unit = the doc diff + the exact code refs (path:symbol) each change is grounded in + generator / doc-build status. Keep memory to fingerprints + a drift count, never doc contents.
+7. If a dirty primary checkout has blocked a doc unit on consecutive runs, prepare and verify it in an isolated `git worktree add <scratch> origin/<default_branch>` and hand off the branch; never reset or clean the user's working tree.""",
 }

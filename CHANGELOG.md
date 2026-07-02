@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-01
+
+Fleet-hardening release driven by a deep audit of the live overnight fleet. The managed
+protocol advances to **v5** and is now backed by deterministic helper scripts instead of
+prose the model must re-derive each run, the upgrade path preserves hand-customized blocks,
+the human-decision loop closes end to end, and multiple projects are governed as one fleet.
+
+### Added
+- **Deterministic state tooling.** `run_lock.py` (atomic job + workspace locks with a
+  fixed owner format and safe reclaim), `run_ledger.py` (open/close verbs writing
+  `last-run.md` + per-unit `runs/` entries, a machine-owned `<!-- ao:counters -->` block in
+  memory, and `ESCALATE`/exit 3 at the consecutive-failure threshold), `state_schema.py`
+  (canonical `---`-frontmatter for run files plus a lenient parser that also reads the legacy
+  bullet and freeform shapes on the fleet), `fingerprint.py` (repo/command change detection),
+  and `fleet_health.py` (read-only scan for expired locks, overdue/empty/blank/oversized jobs).
+- **Protocol v5.** The managed block wires start-of-run locking to `run_lock.py`, the
+  change-detection gate to `fingerprint.py`, and closeout to `run_ledger.py`; adds a
+  **Blocked-worktree recovery** section (repeatedly-blocked producers work in an isolated
+  `git worktree`, never touching the user's checkout), a lease-aware continuation-loop stop
+  rule, target selection from a per-project `PROJECT-QUEUE.md`, and start-of-run readback of
+  decisions propagated from the daily approval digest. Every released block is preserved in
+  `BLOCK_HISTORY`.
+- **Human-decision loop.** The approval digest gains stable per-item ids + `- [ ] approve`
+  checkboxes and a `resolve` verb that applies checked/decided items back to the source queue
+  (`## Resolved`) and the job's memory (`## Stable decisions`), refusing any item whose source
+  changed since the digest was generated. Queue aging (`⚠ AGED`), a tightened safe bucket with
+  an always-needs-judgment deny regex, and `--emit-launchd`/`--emit-cron` delivery artifacts.
+- **Fleet governance.** Per-project suites under `automations/suites/<slug>.toml`; whole-fleet
+  `--fleet` validation with cross-suite checks (one active merge authority per workspace;
+  same-workspace same-time collision warning); `[suite].night_start_hour` for midnight-spanning
+  phase order; `lifecycle.py adopt` to bring hand-written jobs under a manifest without
+  rewriting their prompt; per-job agent records; `fleet_report.py` 7/30-day rollups.
+- **`PROJECT-QUEUE.md`** scaffolding (objectives + open threads), `INSTALL-INFO.json` install
+  stamps with drift reporting, per-pattern model/reasoning-effort hints (never Haiku), and a
+  CI workflow running all four selftest suites on Python 3.11 and 3.12.
+
+### Changed
+- Upgrades are **customization-preserving**: `status_of` reports `customized-block` (checked
+  before `needs-upgrade`) and `apply` refuses to strip a hand-modified block unless
+  `--migrate-custom` folds the extracted rules into the task body. Customization detection is
+  path-insensitive (state-file paths never read as customization).
+
+### Fixed
+- Block integrity: `malformed-block` (missing END / version outside span), `duplicate-block`,
+  and `newer-than-helper` are detected; `apply` never prepends a second block.
+- Gemini jobs are no longer reported as ORPHAN (per-adapter `job_file`).
+- The digest resolves a job's project from the suite manifests, not the first hyphen segment.
+- `cron_to_rrule` handles day-of-month and warns on unsupported cron syntax instead of
+  silently degrading to daily; `security_scanner` detection requires the audit tool on PATH
+  for non-npm ecosystems.
+
 ## [0.6.0] — 2026-06-29
 
 ### Added

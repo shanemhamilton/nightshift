@@ -1,10 +1,10 @@
-# Lifecycle Modes (`setup` / `add` / `remove` / `update`)
+# Lifecycle Modes (`setup` / `add` / `remove` / `update` / `adopt`)
 
 The optimizer hardens existing jobs and the composer stands up a whole suite. The **lifecycle**
 verbs sit on top of both so a person can manage a *single* automation across its whole life — on any
 agent — without hand-editing a manifest or a registry file.
 
-All four verbs are the same pipeline:
+All five verbs are the same pipeline:
 
 > **mutate the `suite.toml` manifest → validate the fleet → gate on approval → materialize into each
 > target agent's registry.**
@@ -38,6 +38,12 @@ python3 $SK/lifecycle.py update --suite <suite.toml> --id myapp-coverage-ratchet
 # remove — disable (reversible) by default; --purge to archive + delete
 python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --agent codex --apply
 python3 $SK/lifecycle.py remove --suite <suite.toml> --id myapp-code-security --purge --agent codex --apply
+
+# adopt — bring an existing LIVE job under manifest/governance, without touching its prompt
+python3 $SK/lifecycle.py adopt --job-id myapp-nightly-cleanup --suite myapp \
+        --phase janitor --template P4 --apply
+python3 $SK/lifecycle.py adopt --job-id legacy-bespoke-job --suite myapp \
+        --phase producer --template custom --scope 'src/**' --apply
 ```
 
 Job ids passed to `update` / `remove` are **project-scoped** (`<project-slug>-<pattern>`, e.g.
@@ -56,6 +62,48 @@ with `--id`). Run `discover_agents.py` to list the exact installed ids, names, a
   (pass `--reassign <integrator-id>` after adding another). Disable is reversible; `--purge` archives
   the job's memory/ledgers to `<root>/.archive/<id>-<UTC>/` before deleting the registry dir. It never
   touches the project repo.
+- **`adopt`** brings an already-running LIVE job (installed outside lifecycle.py, or predating it)
+  under manifest governance without re-materializing or rewriting it. It reads the live Codex
+  `automation.toml` (workspace from `cwds[0]`, schedule recovered from `rrule` via `rrule_to_cron`),
+  drafts a manifest `[[job]]` entry, validates the fleet, and on `--apply` writes the manifest and
+  stamps approval — the live job's `prompt` is never read for rewriting and never touched. `--suite`
+  accepts either an existing manifest path or a project slug (resolved/created under
+  `<codex-home>/automations/suites/<slug>.toml`). Use `--template P1`..`P10` for a known pattern (sets
+  `template_version`) or `--template custom` for a bespoke job the optimizer doesn't own a body for
+  (sets a `prompt_hash` drift marker instead — a sha256 prefix of the live prompt — so a later change
+  to the live prompt is detectable, without lifecycle.py ever claiming to know that prompt's contents).
+  Adopting a second active merge-authority job for a workspace that already has one is rejected by the
+  same fleet rule `setup`/`add` are subject to. `adopt` does not accept `--scope` per template default;
+  pass `--scope` explicitly (repeatable) or the job's `write_scope` stays empty.
+
+### Agent records on jobs
+
+Every verb that materializes a job now records which agents it targeted as `job["agents"]` in the
+manifest (e.g. `["claude"]`, `["codex", "claude"]` for `--agent all`). This field is intentionally
+outside `FINGERPRINT_FIELDS` — recording or changing it never invalidates a job's approval fingerprint.
+It exists to fix a duplication hazard: without it, `update`/`remove` had no way to know which agent(s)
+a job actually lives on, so they always defaulted to materializing/retiring against Codex — silently
+re-installing (or leaving stale) a claude-only or gemini-only job's counterpart on codex.
+
+Resolution per verb:
+- **`setup` / `add`**: `--agent` defaults to `codex` when omitted; the resolved agent list is recorded
+  on the job and used to materialize.
+- **`update`**: pass `--agent` to retarget (records the new list and re-materializes only there);
+  omit it and the job's previously recorded `agents` are reused (falling back to `["codex"]` for
+  jobs that predate this field) — the manifest's `agents` field is *not* rewritten when defaulting.
+- **`remove`**: same resolution as `update` — `--agent` overrides and targets are recorded jobs'
+  `agents`, else `["codex"]`. Retires the job only where it was actually installed.
+- **`adopt`**: records `agents = targets(--agent or "codex")` (the live job it adopts is, by
+  definition, a Codex job) but does not re-materialize.
+
+### `setup` output location
+
+When neither `--suite` nor `--local` is given, `setup` now writes to the same suites/ directory the
+composer and `adopt` use: `<codex-home>/automations/suites/<project-slug>.toml` (via
+`OPT.suite_manifest_path`), not `<repo>/suite.toml`. Pass `--local` to write to
+`<repo>/.codex/automations/suite.toml` instead (a per-repo manifest, useful when the repo itself should
+carry its own suite file rather than the shared codex-home registry). An explicit `--suite PATH` always
+wins over both. The dry-run message prints whichever path was resolved.
 
 ## Per-agent materialization
 

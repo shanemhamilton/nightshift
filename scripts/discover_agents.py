@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,9 @@ _HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("agent_adapters", _HERE / "agent_adapters.py")
 AA = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(AA)  # type: ignore
+
+_version_file = _HERE.parent / "VERSION"
+REPO_VERSION = _version_file.read_text(encoding="utf-8").strip() if _version_file.exists() else None
 
 try:
     import tomllib
@@ -50,25 +54,41 @@ def detect_block(text: str, cfg: dict) -> tuple[bool, int | None]:
     return (True, int(m.group(1)) if m else 0)
 
 
-def suite_index(root: Path) -> dict:
-    """Read <root>/suite.toml if present → {job_id: {project, workspace}}.
-
-    The scaffolder copies the manifest next to the jobs, so this lets discovery
-    label each job with the project/workspace it belongs to — the quickest way to
-    spot a generic or stale job that drifted in from another suite.
-    """
-    if tomllib is None:
-        return {}
-    sp = root / "suite.toml"
-    if not sp.is_file():
-        return {}
+def _read_manifest_jobs(path: Path) -> dict:
+    """Parse one manifest → {job_id: {project, workspace}}. Tolerant: never
+    raises, returns {} on any parse problem."""
     try:
-        data = tomllib.loads(sp.read_text(encoding="utf-8", errors="replace"))
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return {}
     suite = data.get("suite", {})
     meta = {"project": suite.get("project"), "workspace": suite.get("workspace")}
     return {j.get("id"): meta for j in data.get("job", []) if j.get("id")}
+
+
+def suite_index(root: Path) -> dict:
+    """Merge every <root>/suites/*.toml manifest, plus the legacy
+    <root>/suite.toml if present, into one {job_id: {project, workspace}} map.
+
+    The scaffolder copies each project's manifest under suites/<slug>.toml, so
+    this lets discovery label each job with the project/workspace it belongs
+    to — the quickest way to spot a generic or stale job that drifted in from
+    another suite. Suite-dir entries are read first and legacy entries are
+    merged in without overwriting them, so on an id clash the suites/ entry
+    wins. Never raises.
+    """
+    if tomllib is None:
+        return {}
+    index: dict = {}
+    suites_root = root / "suites"
+    if suites_root.is_dir():
+        for sp in sorted(suites_root.glob("*.toml")):
+            index.update(_read_manifest_jobs(sp))
+    legacy = root / "suite.toml"
+    if legacy.is_file():
+        for jid, meta in _read_manifest_jobs(legacy).items():
+            index.setdefault(jid, meta)
+    return index
 
 
 def codex_meta(job_file: Path) -> dict:
@@ -98,9 +118,45 @@ def prompt_text_for(job_file: Path, cfg: dict) -> str:
     return raw  # SKILL.md / prompt.md: the body itself
 
 
+def installed_skill_info(cfg: dict, home: Path) -> dict | None:
+    """Inspect <skills_dir>/automation-optimizer for this agent, if any.
+
+    Returns None if the agent has no global skills dir or the skill isn't
+    installed there. Otherwise returns {"version", "commit", "installed_at"}
+    (commit/installed_at may be None when unavailable, e.g. link mode or a
+    legacy install without INSTALL-INFO.json).
+    """
+    skills_dir = cfg.get("skills_dir")
+    if not skills_dir:
+        return None
+    dest = expand(skills_dir, home) / "automation-optimizer"
+    if not dest.exists():
+        return None
+
+    info_file = dest / "INSTALL-INFO.json"
+    if info_file.is_file():
+        try:
+            data = json.loads(info_file.read_text(encoding="utf-8"))
+            return {
+                "version": data.get("version", "unknown"),
+                "commit": data.get("commit"),
+                "installed_at": data.get("installed_at"),
+            }
+        except Exception:
+            pass
+
+    version_file = dest / "VERSION"
+    if version_file.is_file():
+        return {"version": version_file.read_text(encoding="utf-8").strip(),
+                "commit": None, "installed_at": None}
+
+    return {"version": "unknown", "commit": None, "installed_at": None}
+
+
 def scan_agent(agent: str, cfg: dict, home: Path) -> dict:
     out = {"agent": agent, "label": cfg["label"], "scheduler": cfg["scheduler"],
-           "jobs": [], "canonical": [], "note": ""}
+           "jobs": [], "canonical": [], "note": "",
+           "installed_skill": installed_skill_info(cfg, home)}
 
     # canonical instruction files present
     for c in cfg["canonical_instructions"]:
@@ -120,7 +176,7 @@ def scan_agent(agent: str, cfg: dict, home: Path) -> dict:
         return out
 
     idx = suite_index(root)
-    job_file_name = Path(cfg["automations_glob"]).name if cfg["automations_glob"] else None
+    job_file_name = cfg.get("job_file")
     for d in sorted(root.iterdir()):
         if not d.is_dir():
             continue
@@ -161,6 +217,18 @@ def main(argv: list[str]) -> int:
             continue
         r = scan_agent(agent, cfg, home)
         print(f"=== {r['label']} ({agent}) — scheduler: {r['scheduler']} ===")
+        skill = r["installed_skill"]
+        if skill is None:
+            print("  installed skill: (not installed)")
+        else:
+            commit_short = skill["commit"][:7] if skill["commit"] else "n/a"
+            installed_at = skill["installed_at"] or "n/a"
+            line = f"  installed skill: v{skill['version']} (commit {commit_short}, {installed_at})"
+            if REPO_VERSION and skill["version"] != REPO_VERSION:
+                line += f"   *** DRIFT: repo is v{REPO_VERSION} ***"
+            elif REPO_VERSION and skill["version"] == REPO_VERSION:
+                line += "  (matches repo)"
+            print(line)
         if r["note"]:
             print(f"  {r['note']}")
         if r["jobs"]:

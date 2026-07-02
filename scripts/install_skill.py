@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import importlib.util
+import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,6 +45,29 @@ IGNORE = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "*.bak.*",
 
 def expand(path: str, home: Path) -> Path:
     return Path(str(home) + path[1:]) if path.startswith("~") else Path(path)
+
+
+def _repo_commit() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(SKILL_SRC), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def write_install_info(dest: Path) -> None:
+    """Record what was installed (copy mode only) so discovery can spot drift."""
+    version_file = SKILL_SRC / "VERSION"
+    version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
+    info = {
+        "version": version,
+        "commit": _repo_commit(),
+        "installed_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    (dest / "INSTALL-INFO.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
 
 def install_one(agent: str, cfg: dict, home: Path, *, link: bool, dry: bool) -> dict:
@@ -78,15 +103,21 @@ def install_one(agent: str, cfg: dict, home: Path, *, link: bool, dry: bool) -> 
             res["note"] = f"backed up prior install -> {bak.name}"
 
     if link:
+        # Symlink mode: dest points INTO the live repo, so writing
+        # INSTALL-INFO.json there would pollute the source tree itself.
+        # Discovery falls back to reading dest/VERSION (which is live) instead.
         dest.symlink_to(SKILL_SRC, target_is_directory=True)
         res["action"] = "linked"
     else:
         shutil.copytree(SKILL_SRC, dest, ignore=IGNORE)
         res["action"] = "installed"
+        write_install_info(dest)
 
     # verify key files landed
     must = ["SKILL.md", "scripts/discover_agents.py",
             "scripts/optimize_codex_automations.py", "scripts/agent_adapters.py"]
+    if not link:
+        must = must + ["INSTALL-INFO.json"]
     missing = [m for m in must if not (dest / m).exists()]
     if missing:
         res["action"] = "error"

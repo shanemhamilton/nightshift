@@ -140,17 +140,19 @@ def main(argv: list[str]) -> int:
         OPT.scaffold_sidecars(job_dir, created)
         written.append(jid)
 
+    installed_manifest_path = OPT.suite_manifest_path(home, suite.get("project", ""))
     if args.install:
-        # place the manifest alongside the jobs so --fleet can find it
-        autos.mkdir(parents=True, exist_ok=True)
-        (autos / "suite.toml").write_text(suite_path.read_text(encoding="utf-8"),
-                                          encoding="utf-8")
+        # place the manifest under suites/<slug>.toml so --fleet (multi-suite)
+        # picks it up alongside every other project's manifest
+        installed_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        installed_manifest_path.write_text(suite_path.read_text(encoding="utf-8"),
+                                            encoding="utf-8")
 
     print()
     if args.install:
         names = ", ".join(f"{name_of[i]} [{i}]" for i in written)
         print(f"Installed {len(written)} job(s): {names}")
-        print(f"Manifest copied to {autos / 'suite.toml'}")
+        print(f"Manifest copied to {installed_manifest_path}")
     if errors:
         print(f"Errors ({len(errors)}):")
         for jid, why in errors:
@@ -160,7 +162,9 @@ def main(argv: list[str]) -> int:
     else:
         print("\nVerify:")
         print(f"  optimize_codex_automations.py --codex-home {home} --strict")
-        print(f"  optimize_codex_automations.py --fleet {autos / 'suite.toml'} --require-approved")
+        print(f"  optimize_codex_automations.py --fleet {installed_manifest_path} --require-approved")
+        print(f"  optimize_codex_automations.py --fleet --codex-home {home}   "
+              "# validate the whole fleet across all suites")
         print("Your scheduler picks up automation.toml files under "
               f"{autos}; confirm they appear and are enabled.")
     return 1 if errors else 0

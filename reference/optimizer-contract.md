@@ -2,6 +2,14 @@
 
 Every recurring job must satisfy these items. Each line states the control and the one-line reason. The canonical managed block in `optimizer-block.md` encodes all of them; `--strict` in the helper checks that the markers for each are present.
 
+> **Protocol v5 wiring.** From v5 the block delegates these controls to deterministic helper scripts instead of asking each agent to re-derive the algorithm in prose (the prose stays only as a shell-less fallback):
+> - **Item 4 (lock)** → `run_lock.py acquire/reclaim/release` — atomic job lock plus a per-workspace lock (`--workspace`) so two jobs never mutate the same checkout in parallel; fixed owner format; safe reclaim (dead PID **and** expired lease, re-acquire + read-back-confirm).
+> - **Item 8 (change-detection)** → `fingerprint.py diff` at start of run; `UNCHANGED` writes a no-op ledger entry and stops.
+> - **Items 2/3/15 (ledger, metrics, escalation)** → `run_ledger.py close` writes `last-run.md` + a per-unit `runs/` entry and maintains a machine-owned `<!-- ao:counters -->` block in memory; it exits 3 with `ESCALATE` at the consecutive-failure threshold, at which point the job MUST queue a structured human-approval item and open a `PROJECT-QUEUE.md` thread, then mark the target ineligible.
+> - **New — blocked-worktree recovery.** A producer repeatedly blocked by a dirty primary checkout classifies the dirt once (human-approval item) and proceeds in an isolated `git worktree add <scratch> origin/<default_branch>`, never resetting/cleaning the user's working tree.
+> - **New — lease-aware continuation.** The loop stops before starting a unit it cannot finish within the remaining lease; integrators may `run_lock.py extend`.
+> - **New — objectives + decision readback.** Target selection reads the per-project `PROJECT-QUEUE.md` before the private priority queue, and startup honors decisions propagated into memory `## Stable decisions` by the daily approval digest.
+
 ## Core state
 1. **Persistent memory file** — `state/memory.md` holds stable fingerprints and prior decisions so the job recognizes what it has already seen.
 2. **Run ledger** — `state/last-run.md` plus dated entries in `state/runs/` record every run's outcome, so the job (and you) can audit history.
