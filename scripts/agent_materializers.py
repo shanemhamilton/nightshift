@@ -20,6 +20,7 @@ scaffold_suite.py and lifecycle.py share one copy and never drift.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 from pathlib import Path
 
@@ -68,12 +69,25 @@ def cron_to_rrule(schedule: str) -> str:
     return f"FREQ=DAILY;BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
 
 
+_HAIKU_RE = re.compile(r"haiku", re.IGNORECASE)
+
+
 def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None,
                     project: str | None = None) -> str:
-    """Emit a real Codex automation.toml (version/id/kind/name/prompt/status/rrule/cwds)."""
+    """Emit a real Codex automation.toml (version/id/kind/name/prompt/status/rrule/cwds).
+
+    model precedence:            `model` PARAMETER > job.get("model") > DEFAULTS[template].get("model")
+    reasoning_effort precedence: job.get("reasoning_effort") > DEFAULTS[template].get("reasoning_effort")
+    Never emits a Haiku-class model (Sonnet is the floor) — raises ValueError instead.
+    """
     if "'''" in prompt:  # literal triple-quote can't contain '''
         raise ValueError(f"{job.get('id')}: prompt contains ''' and can't be emitted")
     name = naming.display_name(job, project)
+    defaults = DEFAULTS.get(job["template"], {})
+    resolved_model = model or job.get("model") or defaults.get("model")
+    if resolved_model and _HAIKU_RE.search(resolved_model):
+        raise ValueError(f"{job['id']}: refusing to emit a Haiku-class model ({resolved_model})")
+    resolved_effort = job.get("reasoning_effort") or defaults.get("reasoning_effort")
     lines = [
         "version = 1",
         f"id = {_q(job['id'])}",
@@ -89,8 +103,10 @@ def emit_codex_toml(job: dict, prompt: str, cwd: str, model: str | None,
         f"execution_environment = {_q(job.get('execution_environment', 'local'))}",
         f"cwds = [{_q(cwd)}]",
     ]
-    if model or job.get("model"):
-        lines.append(f"model = {_q(model or job['model'])}")
+    if resolved_model:
+        lines.append(f"model = {_q(resolved_model)}")
+    if resolved_effort:
+        lines.append(f"reasoning_effort = {_q(resolved_effort)}")
     return "\n".join(lines) + "\n"
 
 

@@ -160,6 +160,22 @@ Installed once for the whole fleet, not per project. Runs after every project's 
 
 ---
 
+## Model / reasoning-effort defaults
+
+Each template may carry an optional `reasoning_effort` default in `pattern_bodies.DEFAULTS`, consumed by `agent_materializers.emit_codex_toml` when writing a Codex `automation.toml`:
+
+- **P3** (integrator, sole merge authority) and **P7** (security sweep) → `"high"`. Both carry judgment-heavy classification (merge safety, severity triage) where a wrong call is costly.
+- **P9** (cross-project digest) and **P10** (docs-sync) → `"low"`. Both are mechanical/deterministic — P9 wraps a script and surfaces its output, P10 grounds every edit in verified code.
+- **All other patterns** (P1, P2, P4, P5, P6, P8) → unset. No `reasoning_effort` key is added, so the CLI/job default applies and no line is emitted in the `.toml`.
+
+**Precedence** (highest wins):
+- `model`: the `model` **parameter** passed to `emit_codex_toml` > `job.get("model")` > `DEFAULTS[template].get("model")`. No pattern sets a `model` default — model selection is left to the CLI/job unless a job explicitly overrides it.
+- `reasoning_effort`: `job.get("reasoning_effort")` > `DEFAULTS[template].get("reasoning_effort")`.
+
+**Never-Haiku rule:** after resolving the model, `emit_codex_toml` raises `ValueError` if it matches `/haiku/i`, case-insensitively — Sonnet is the floor for every emitted automation, regardless of where the model value came from (parameter, job, or default).
+
+---
+
 ## How they compose
 
 Default healthy DAG when all nine per-project patterns apply:

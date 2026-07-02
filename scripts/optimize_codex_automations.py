@@ -51,7 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover
 # Matches the live convention: "## Automation Optimizer Protocol" ... "Protocol
 # version: N" ... "## End Automation Optimizer Protocol", with sidecars at the
 # JOB ROOT (not a state/ subfolder). State-file paths are absolute, per job.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 BEGIN_MARKER = "## Automation Optimizer Protocol"
 END_MARKER = "## End Automation Optimizer Protocol"
 PROTOCOL_VERSION_RE = re.compile(r"Protocol version:\s*(\d+)")
@@ -60,9 +60,12 @@ PROTOCOL_VERSION_RE = re.compile(r"Protocol version:\s*(\d+)")
 # loop/changeset/edit cap first, and falls back to this otherwise.
 DEFAULT_RUN_UNIT_BUDGET = 5
 # Stable section headers used by --strict as an integrity check (prose may vary).
+# v5 adds "Blocked-worktree recovery" and promotes "Scope and target selection"
+# to a required, checked section.
 REQUIRED_SECTIONS = [
     "Start-of-run protocol", "Agentic execution protocol",
     "Duplicate-avoidance protocol", "Failure taxonomy",
+    "Blocked-worktree recovery", "Scope and target selection",
     "Continuation loop", "Push, sync, and merge bias", "Evidence and closeout",
 ]
 # Sidecars live at the JOB ROOT directory.
@@ -141,6 +144,86 @@ Evidence and closeout:
 - Update memory, baseline failures, priority queue, human approval queue, `last-run.md`, and a dated run ledger before final reporting.
 - When you queue a human decision, write it to `human-approval.md` as a STRUCTURED item the cross-project digest can read: a `## <one-line ask>` heading, then `- risk:` low|medium|high, `- suggested_default:` (what you would do absent other input), `- action:` (the exact command / branch / ticket id to act on), `- first_seen:` (ISO date), and `- evidence:` (ids/paths, never secrets). Keep these fields current; remove an item once it is resolved.
 - Release the concurrency lock at the end ONLY if it still holds YOUR run token — never delete a lock you no longer own. If you crashed mid-run, the lease lets the next run reclaim it safely.
+- Final report must state what was checked, what was skipped as known, what was fixed, what was pushed or merged, what remains blocked, and the next best target.
+
+## End Automation Optimizer Protocol""",
+    5: """## Automation Optimizer Protocol
+
+Protocol version: 5
+
+This is a recurring automation. Use this protocol before the task-specific instructions so repeated runs learn, avoid duplicate work, and stop safely. This version wires the protocol to deterministic helper scripts that ship with the automation-optimizer skill — `run_lock.py` (concurrency + workspace locks), `fingerprint.py` (change detection), and `run_ledger.py` (ledger + failure counters + escalation). PREFER the helpers to hand-rolling their algorithm in prose; the prose is kept as a fallback for when you cannot run a shell.
+
+State files for this automation:
+- Memory: `{d}/memory.md`
+- Last run summary: `{d}/last-run.md`
+- Dated run ledgers: `{d}/runs/`
+- State fingerprints: `{d}/state-fingerprints.json`
+- Priority queue: `{d}/priority-queue.md`
+- Human approval queue: `{d}/human-approval.md`
+- Baseline failure registry: `{d}/baseline-failures.md`
+- Concurrency lock: `{d}/{lock_file}`
+- Project objectives + open threads: `<workspace>/.codex/automations/PROJECT-QUEUE.md`
+
+Start-of-run protocol:
+1. Acquire the concurrency lock ATOMICALLY before touching repos or trackers, then hold it for the whole session (every continuation-loop unit). PREFER the helper: run `run_lock.py acquire {d} --workspace <each repo you will mutate>`. It creates the lock as a directory (atomic), records a fixed-format owner (token, pid, host, cwd, start, lease_until), and ALSO takes a per-workspace lock so two different jobs never mutate the same checkout in parallel. Capture the printed token — you need it to release.
+   - Fallback without a shell: `mkdir {d}/{lock_file}` (atomic; fails if it already exists) and record owner info inside it (`{d}/{lock_file}/owner`): a unique run token, PID, host, cwd, ISO start time, and `lease_until` = start + your maximum wall-clock budget. The acquire MUST fail when a lock already exists — never read-then-write, which races: two runs both judge the other "stale" and both proceed on the same repos.
+   - If the helper prints `DEFER` (or the fallback FAILS), the job lock — or a workspace you need — is held. Do NOT run in parallel: write a `deferred` ledger entry recording the holding token and `lease_until`, and STOP this run. A contended WORKSPACE lock is the same signal for a shared checkout — defer rather than collide on it.
+   - Reclaim ONLY a provably abandoned lock — recorded PID not alive AND now past `lease_until`. PREFER `run_lock.py reclaim {d}` (it removes the dead lock, re-acquires atomically, then reads back to confirm it holds YOUR token; if any other token appears it defers and stops). Record why the prior lock was abandoned.
+2. Read memory, the last run summary, baseline failures, the priority queue, the human approval queue, and — when it exists — the project's `PROJECT-QUEUE.md` (objectives + open threads). Treat these as hints, not proof. In memory, check the `## Stable decisions` section for decisions propagated from the daily approval digest since your last run, and honor them.
+3. Re-check live source of truth: repo status, tracker state, relevant tools, scheduled task config, and deployment state when applicable.
+4. Run a tool/environment preflight for required commands and services. If a prerequisite is missing, record it once, choose another safe target if possible, or stop with a precise blocker.
+5. Change-detection gate: run `fingerprint.py diff --job-dir {d} --repo <each watched repo> --cmd <each watched query>`. If it prints `UNCHANGED` for everything you watch, nothing actionable happened since the last run — write a no-op ledger entry (`run_ledger.py close {d} --outcome no-op --units 0 --stop-reason no-op`), release the lock, and STOP. Only proceed once a fingerprint has actually moved. Refresh fingerprints at closeout (diff `--update`, or a fresh `snapshot`).
+
+Agentic execution protocol:
+- For non-trivial work, do not run as a single monolithic agent when the active tool supports subagents, project agents, or equivalent parallel review lanes. Split the work into bounded roles such as inventory/triage, implementation, verification/review, and integration/merge.
+- Keep agent scopes non-overlapping. Give each agent exact files, commands, or routes. Require evidence, not self-certification.
+- Use direct single-agent execution only for small config-only updates, read-only audits, or cases where subagent tooling is unavailable. Record that limitation in the run ledger when it applies.
+- Always include a final integrator pass that reconciles findings, reruns required checks, updates memory/tracker state, and decides whether the work is safe to push and merge.
+
+Duplicate-avoidance protocol:
+- Build a stable fingerprint for every finding: route/slice, failure class, normalized error or symptom, likely file/symbol, tracker id, and verification command. Exclude timestamps, machine-specific ids, screenshot paths, and drifting line numbers.
+- If the same fingerprint is already open, update the existing tracker item and move to another safe target.
+- If the same fingerprint was previously fixed, replay its saved confirmation path first. If it passes, classify as duplicate or false alarm. If it fails, classify as a regression and update or reopen the prior tracker item before fixing.
+- If the fingerprint is environment-only or false-positive, verify that once, record the skip, and continue.
+- If it is genuinely new, create or update one focused tracker item and proceed under the normal task rules.
+
+Failure taxonomy:
+- Use consistent labels: `passed`, `fixed`, `known-open`, `regression`, `duplicate`, `false-positive`, `environment-only`, `blocked-by-dirty-worktree`, `blocked-by-missing-tool`, `blocked-by-test-baseline`, `blocked-by-approval`, `unsafe-to-merge`, `needs-human-decision`.
+
+Blocked-worktree recovery:
+- If the SAME blocker (same fingerprint, e.g. `blocked-by-dirty-worktree`) has stopped this target on consecutive runs, do not burn another night on it. Queue the dirty-state classification ONCE — a structured human-approval item naming the dirty paths and their likely owner — then, if you are a PRODUCER that only needs a clean base, proceed in an ISOLATED worktree: `git worktree add <scratch-path> origin/<default_branch>`, do the bounded unit there, and hand the branch to the integrator.
+- NEVER `git reset`, `git clean`, `git checkout -- .`, or otherwise mutate the user's PRIMARY checkout to "unblock" yourself — the dirty state may be their unsaved work. Producers only ever need a clean base branch, which the isolated worktree gives them without touching the working tree.
+- Prune stale automation worktrees you created (`git worktree remove`) once their branch is merged, so scratch worktrees do not accumulate.
+
+Scope and target selection:
+- Read `PROJECT-QUEUE.md` open threads FIRST (they carry cross-run objectives and human-set priorities), THEN your private priority queue. Prefer high-value targets that are least recently covered, adjacent to recent fixes, or newly unblocked.
+- A target the escalation rule marked ineligible (see closeout) stays skipped until its underlying state changes — do not re-attempt a thread that is parked awaiting a human decision.
+- Respect any task-specific loop, time, file-count, merge, and deploy limits. Each unit of work stays bounded. If the task states no per-run cap, complete up to {budget} bounded units this run (see the continuation loop below).
+- Do not spend the whole run on a known blocker unless its status changed.
+
+Continuation loop:
+- You are running overnight and usually finish one unit with time to spare. Do not stop after a single unit. After a unit closes out safely, loop back and start the next one so the run delivers as much verified value as the budget allows.
+- Each loop: re-read live state, fingerprint-dedupe against the work you just completed this run (so your own commits/tickets are never mistaken for new work), then pick the next highest-value unblocked target (PROJECT-QUEUE threads first, then the priority queue).
+- Keep looping until ANY stop condition is hit, then go to closeout: (a) the per-run unit budget is reached — the task's own loop/changeset/edit cap, or {budget} if none is stated; (b) no new high-value unblocked target remains (queues drained, nothing else changed); (c) two consecutive units this run fail or are blocked; (d) the next unit would cross an approval or otherwise unsafe boundary — queue it and stop that line of work; (e) you detect you are repeating or ping-ponging your own output; (f) LEASE-AWARE STOP: before starting a unit, if the remaining lease is shorter than the longest unit you have completed this run (or 20 minutes if none yet), go to closeout rather than start a unit you may not finish — an integrator that legitimately needs more time to drain the merge queue may `run_lock.py extend --minutes N` instead of stopping.
+- Every unit independently obeys this whole protocol (duplicate-avoidance, failure taxonomy, merge bias). Hold the SAME concurrency lock for the whole session across all units — do not release and re-acquire it between units. Write one ledger entry per unit via `run_ledger.py close`.
+- This is a between-unit loop, not the start-of-run change-detection gate: if NOTHING watched changed since the last run, that gate (step 5) still ends the run as a no-op. The continuation loop only applies once there is genuine high-value work to do.
+
+Push, sync, and merge bias:
+- Default posture: verified completed work should be synced, pushed, and merged to the project default branch instead of left local. Bias toward LANDING safe work, not stranding it behind a human gate it does not need.
+- SAFE-MERGE LANE (auto-merge, no human approval) — the integrator (sole merge authority) may push and merge to the default branch when ALL of these hold: (a) every required gate/CI check passes on the branch; (b) every changed path is inside the producing job's declared `write_scope`; (c) NO changed path touches a production-config, secret/credential, database migration, deploy/release, CI/workflow, auth, billing, or other externally-facing surface; (d) the worktree is clean except the intended diff (agent-local tool metadata does NOT count as dirty — see below); (e) ownership is clear and there is no concurrency-lock conflict. Fetch/prune first; record the merged sha and a rollback note in the ledger.
+- Anything OUTSIDE that lane does NOT auto-merge: push a feature branch when allowed, add a STRUCTURED item to the human approval queue (see closeout), and report the exact approval needed. This covers any change touching the surfaces in (c), a failing or again-uncertain gate, ambiguous ownership, history rewrite, force-push, deploy, or a cross-repo/coordinated change.
+- Agent-local tool metadata is NOT a merge blocker: files like `.serena/`, `.beads/issues.jsonl`, local editor/scratch state, and similar local-only artifacts must be ignored by the clean-worktree check. If they are not yet git-ignored, adding that ignore rule is itself a safe instruction-level change (route it through the integrator / the P8 reflector) — never a reason to block the night's real work.
+- Evidence is PROPORTIONAL to the change: require screenshot/visual proof ONLY for user-visible UI changes. For logic, test, refactor, docs, or config changes, green automated checks are sufficient evidence — do not block a merge solely for a missing screenshot.
+- Prefer the project's documented merge path; use existing PRs when appropriate, otherwise a non-history-rewriting local merge/squash for automation-owned work when policy permits.
+- If checks fail because of a known baseline failure, do not hide it. Update the baseline registry and merge only when project policy explicitly permits that exception.
+
+Evidence and closeout:
+- Keep compact evidence only: commands, pass/fail summaries, tracker ids, commit hashes, screenshot paths when UI proof matters, and the exact next action.
+- Write the ledger through the helper: `run_ledger.py close {d} --outcome <class> --units <n> --stop-reason <why> --failure-class <label> [--merged <sha>]... [--branch <b>]... [--tracker <id>]...`. It updates `last-run.md`, appends a dated `runs/` entry, and maintains the machine-owned `<!-- ao:counters -->` block (consecutive_failures, last_success) in memory.md — so you never hand-maintain the failure counter.
+- If `run_ledger.py close` prints `ESCALATE` and exits 3 (the consecutive-failure threshold was reached), you MUST, before finishing: (a) write a STRUCTURED human-approval item; (b) convert the blocked fingerprint into an open thread in `PROJECT-QUEUE.md` carrying risk, suggested_default, and the exact unblock action; and (c) mark that target ineligible until its state changes. Do not silently fail yet again.
+- Structured human-approval item format — a `## <one-line ask>` heading, then `- risk:` low|medium|high, `- suggested_default:` (what you would do absent other input), `- action:` (the exact command / branch / ticket id to act on), `- first_seen:` (ISO date), and `- evidence:` (ids/paths, never secrets). Keep these current; remove an item once it is resolved. The daily cross-project digest reads these.
+- Update the `PROJECT-QUEUE.md` thread you touched (advance its next-action / status), refresh state fingerprints, and keep memory COMPACT: memory.md holds only watched-fingerprint pointers, at most ~20 stable decisions, and the machine counters block — per-run detail lives in `runs/`, never accumulated in memory.
+- Release the concurrency lock at the end ONLY if it still holds YOUR run token (`run_lock.py release {d} --token <token> --workspace <each>`) — never delete a lock you no longer own. If you crashed mid-run, the lease lets the next run reclaim it safely.
 - Final report must state what was checked, what was skipped as known, what was fixed, what was pushed or merged, what remains blocked, and the next best target.
 
 ## End Automation Optimizer Protocol""",
@@ -320,19 +403,35 @@ def find_custom_lines(found_span_text: str, canonical_text: str) -> list[str]:
     return extra
 
 
+_MEMORY_LINE_RE = re.compile(r"-\s*Memory:\s*`(.+?)/memory\.md`")
+
+
+def _block_job_dir(span_text: str, fallback: str) -> str:
+    """The job dir the block ITSELF references (from its Memory state-file line),
+    so the canonical comparison is regenerated at the same path. This makes
+    customization detection depend on the PROSE, not on the absolute state-file
+    paths — which legitimately differ per job and must not read as 'customized'
+    (e.g. when auditing a copy, or after a job dir is renamed)."""
+    m = _MEMORY_LINE_RE.search(span_text)
+    return m.group(1) if m else fallback
+
+
 def is_block_customized(prompt: str, job_dir: str, version: int) -> tuple[bool, list[str]]:
     """Compare the found span (canonicalized) against the canonical block for
-    THAT version regenerated with the job's own dir. Returns (is_customized,
-    extra_lines)."""
+    THAT version, regenerated at the dir the block itself references — so only
+    genuine prose changes count as customization, never path differences.
+    Returns (is_customized, extra_lines)."""
     span = find_block_span(prompt)
     if span is None or version not in BLOCK_HISTORY:
         return (False, [])
     start, end = span
-    found_text = _canonicalize(prompt[start:end])
-    canonical_text = _canonicalize(managed_block(job_dir, version))
+    span_text = prompt[start:end]
+    ref_dir = _block_job_dir(span_text, job_dir)
+    found_text = _canonicalize(span_text)
+    canonical_text = _canonicalize(managed_block(ref_dir, version))
     if found_text == canonical_text:
         return (False, [])
-    return (True, find_custom_lines(prompt[start:end], canonical_text))
+    return (True, find_custom_lines(span_text, canonical_text))
 
 
 def choose_quote(content: str) -> tuple[str, str] | None:
@@ -371,8 +470,13 @@ def status_of(path: Path, key: str) -> tuple[str, str]:
     duplicate-block, customized-block, no-prompt, error, inactive.
 
     Detection precedence: inactive -> no-prompt -> duplicate-block ->
-    malformed-block -> needs-block / newer-than-helper / needs-upgrade ->
-    customized-block -> needs-sidecars -> compliant."""
+    malformed-block -> needs-block / newer-than-helper -> customized-block ->
+    needs-upgrade -> needs-sidecars -> compliant.
+
+    customized-block is checked BEFORE needs-upgrade so that a hand-modified
+    OUT-OF-DATE block is refused (or routed through --migrate-custom) rather than
+    silently stripped and replaced on upgrade — that would destroy the very
+    project rules a job merged into its block."""
     raw = path.read_text(encoding="utf-8")
     try:
         data = tomllib.loads(raw)
@@ -396,11 +500,14 @@ def status_of(path: Path, key: str) -> tuple[str, str]:
         return ("needs-block", "no protocol block")
     if ver > PROTOCOL_VERSION:
         return ("newer-than-helper", f"protocol v{ver} newer than helper v{PROTOCOL_VERSION}")
-    if ver < PROTOCOL_VERSION:
-        return ("needs-upgrade", f"protocol v{ver} < v{PROTOCOL_VERSION}")
+    # Customization is checked for out-of-date blocks too (whenever BLOCK_HISTORY
+    # can reproduce the canonical block for `ver`), so an upgrade never strips
+    # hand-added project rules — customized-block routes through --migrate-custom.
     customized, _ = is_block_customized(prompt, str(path.parent), ver)
     if customized:
         return ("customized-block", f"protocol v{ver} block was hand-modified")
+    if ver < PROTOCOL_VERSION:
+        return ("needs-upgrade", f"protocol v{ver} < v{PROTOCOL_VERSION}")
     missing = [s for s in REQUIRED_SIDECARS if not (path.parent / s).is_file()]
     if missing:
         return ("needs-sidecars", f"missing {', '.join(missing)}")

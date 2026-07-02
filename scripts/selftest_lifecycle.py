@@ -178,6 +178,45 @@ def main() -> int:
                           "--home-override", str(root / ".gemini")])
         check("gemini emits crontab line", "crontab" in out and "gemini -p" in out, out)
 
+        # --- reasoning_effort defaults + never-Haiku guard (C10) -----------
+        # demo-app-code-security (P7) was purged above, so build the job dict
+        # directly rather than looking it up in the (now-pruned) manifest.
+        p7_job = {"id": "demo-app-code-security", "template": "P7", "phase": "producer",
+                  "merge_authority": False, "schedule": "0 2 * * *",
+                  "write_scope": ["**"], "mode": "active", "hands_off_to": "demo-app-repo-hygiene"}
+        p7_prompt = LC.MAT.build_prompt(p7_job, str(autos / p7_job["id"]))
+        p7_toml = LC.MAT.emit_codex_toml(p7_job, p7_prompt, str(ws), None)
+        check("P7 emits reasoning_effort = high",
+              'reasoning_effort = "high"' in p7_toml, p7_toml)
+
+        p9_job = {"id": "fleet-approval-digest", "template": "P9", "phase": "reflector",
+                  "merge_authority": False, "schedule": "0 6 * * *",
+                  "write_scope": ["**"], "mode": "active"}
+        p9_prompt = LC.MAT.build_prompt(p9_job, str(autos / p9_job["id"]))
+        p9_toml = LC.MAT.emit_codex_toml(p9_job, p9_prompt, str(ws), None)
+        check("P9 emits reasoning_effort = low",
+              'reasoning_effort = "low"' in p9_toml, p9_toml)
+
+        p2_job = {"id": "demo-app-product-value", "template": "P2", "phase": "producer",
+                  "merge_authority": False, "schedule": "0 2 * * *",
+                  "write_scope": ["**"], "mode": "active", "hands_off_to": "demo-app-repo-hygiene"}
+        p2_prompt = LC.MAT.build_prompt(p2_job, str(autos / p2_job["id"]))
+        p2_toml = LC.MAT.emit_codex_toml(p2_job, p2_prompt, str(ws), None)
+        check("P2 (no effort default) omits reasoning_effort line",
+              "reasoning_effort" not in p2_toml, p2_toml)
+
+        haiku_job = dict(p2_job)
+        haiku_job["id"] = "demo-app-haiku-guard"
+        haiku_job["model"] = "claude-haiku-4-5"
+        haiku_prompt = LC.MAT.build_prompt(haiku_job, str(autos / haiku_job["id"]))
+        try:
+            LC.MAT.emit_codex_toml(haiku_job, haiku_prompt, str(ws), None)
+            check("emit_codex_toml refuses a Haiku-class model", False,
+                  "expected ValueError, none raised")
+        except ValueError as e:
+            check("emit_codex_toml refuses a Haiku-class model",
+                  "haiku" in str(e).lower(), str(e))
+
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
 
