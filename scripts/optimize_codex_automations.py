@@ -70,12 +70,14 @@ LOCK_FILE = ".automation.lock"
 SIDECAR_DIRS = ["runs"]
 
 
-def managed_block(job_dir: str) -> str:
-    """The canonical protocol block, with this job's absolute state-file paths."""
-    d = job_dir.rstrip("/")
-    return f"""## Automation Optimizer Protocol
+# Canonical block bodies, keyed by protocol version. Each template is formatted
+# with {d} (the job's absolute directory, no trailing slash), {lock_file}, and
+# {budget} — never with a bare f-string, so old versions stay reproducible even
+# after PROTOCOL_VERSION advances (needed for customization-preserving upgrades).
+BLOCK_HISTORY: dict[int, str] = {
+    4: """## Automation Optimizer Protocol
 
-Protocol version: {PROTOCOL_VERSION}
+Protocol version: 4
 
 This is a recurring automation. Use this protocol before the task-specific instructions so repeated runs learn, avoid duplicate work, and stop safely.
 
@@ -86,11 +88,11 @@ State files for this automation:
 - Priority queue: `{d}/priority-queue.md`
 - Human approval queue: `{d}/human-approval.md`
 - Baseline failure registry: `{d}/baseline-failures.md`
-- Concurrency lock: `{d}/{LOCK_FILE}`
+- Concurrency lock: `{d}/{lock_file}`
 
 Start-of-run protocol:
 1. Acquire the concurrency lock ATOMICALLY before touching repos or trackers, then hold it for the whole session (every continuation-loop unit). The acquire MUST fail when a lock already exists — never read-then-write, which races: two runs both judge the other "stale" and both proceed in parallel on the same repos.
-   - Acquire by creating the lock as a directory: `mkdir {d}/{LOCK_FILE}` (atomic; fails if it already exists). Equivalent atomic alternative: write the lock file under `set -o noclobber`. On success, record owner info inside it (e.g. `{d}/{LOCK_FILE}/owner`): a unique run token, PID, host, cwd, ISO start time, and `lease_until` = start + your maximum wall-clock budget.
+   - Acquire by creating the lock as a directory: `mkdir {d}/{lock_file}` (atomic; fails if it already exists). Equivalent atomic alternative: write the lock file under `set -o noclobber`. On success, record owner info inside it (e.g. `{d}/{lock_file}/owner`): a unique run token, PID, host, cwd, ISO start time, and `lease_until` = start + your maximum wall-clock budget.
    - If the acquire FAILS, the lock is held — DEFER, do not run in parallel. Read the owner. If its recorded PID is still alive OR now is before `lease_until`, write a `deferred` ledger entry (`deferred: lock held by <token> until <lease_until>`) and STOP this run. Another instance owns the night; racing it corrupts shared repos.
    - Reclaim ONLY a provably abandoned lock — its recorded PID is not alive AND now is past `lease_until` plus a grace margin. Reclaim atomically: note the dead token, remove the lock, re-acquire with the same atomic op, then READ IT BACK and confirm it now holds YOUR token. If any other token appears, another run beat you to it — defer and STOP. Record why the prior lock was abandoned.
 2. Read memory, the last run summary, baseline failures, priority queue, and human approval queue. Treat these as hints, not proof.
@@ -115,13 +117,13 @@ Failure taxonomy:
 
 Scope and target selection:
 - Prefer high-value targets that are least recently covered, adjacent to recent fixes, or newly unblocked.
-- Respect any task-specific loop, time, file-count, merge, and deploy limits. Each unit of work stays bounded. If the task states no per-run cap, complete up to {DEFAULT_RUN_UNIT_BUDGET} bounded units this run (see the continuation loop below).
+- Respect any task-specific loop, time, file-count, merge, and deploy limits. Each unit of work stays bounded. If the task states no per-run cap, complete up to {budget} bounded units this run (see the continuation loop below).
 - Do not spend the whole run on a known blocker unless its status changed.
 
 Continuation loop:
 - You are running overnight and usually finish one unit with time to spare. Do not stop after a single unit. After a unit closes out safely, loop back and start the next one so the run delivers as much verified value as the budget allows.
 - Each loop: re-read live state, fingerprint-dedupe against the work you just completed this run (so your own commits/tickets are never mistaken for new work), then pick the next highest-value unblocked target from the priority queue.
-- Keep looping until ANY stop condition is hit, then go to closeout: (a) the per-run unit budget is reached — the task's own loop/changeset/edit cap, or {DEFAULT_RUN_UNIT_BUDGET} if none is stated; (b) no new high-value unblocked target remains (priority queue drained, nothing else changed); (c) two consecutive units this run fail or are blocked; (d) the next unit would cross an approval or otherwise unsafe boundary — queue it and stop that line of work; (e) you detect you are repeating or ping-ponging your own output.
+- Keep looping until ANY stop condition is hit, then go to closeout: (a) the per-run unit budget is reached — the task's own loop/changeset/edit cap, or {budget} if none is stated; (b) no new high-value unblocked target remains (priority queue drained, nothing else changed); (c) two consecutive units this run fail or are blocked; (d) the next unit would cross an approval or otherwise unsafe boundary — queue it and stop that line of work; (e) you detect you are repeating or ping-ponging your own output.
 - Every unit independently obeys this whole protocol (duplicate-avoidance, failure taxonomy, merge bias). Hold the SAME concurrency lock for the whole session across all units — do not release and re-acquire it between units. Write one ledger entry per unit.
 - This is a between-unit loop, not the start-of-run change-detection gate: if NOTHING watched changed since the last run, that gate still ends the run as a no-op. The continuation loop only applies once there is genuine high-value work to do.
 
@@ -141,7 +143,17 @@ Evidence and closeout:
 - Release the concurrency lock at the end ONLY if it still holds YOUR run token — never delete a lock you no longer own. If you crashed mid-run, the lease lets the next run reclaim it safely.
 - Final report must state what was checked, what was skipped as known, what was fixed, what was pushed or merged, what remains blocked, and the next best target.
 
-## End Automation Optimizer Protocol"""
+## End Automation Optimizer Protocol""",
+}
+
+
+def managed_block(job_dir: str, version: int = PROTOCOL_VERSION) -> str:
+    """The canonical protocol block for `version`, with this job's absolute
+    state-file paths. Raises KeyError if `version` has no known template —
+    callers that upgrade should only ever request PROTOCOL_VERSION."""
+    d = job_dir.rstrip("/")
+    template = BLOCK_HISTORY[version]
+    return template.format(d=d, lock_file=LOCK_FILE, budget=DEFAULT_RUN_UNIT_BUDGET)
 
 
 # --- Sidecar templates (created at the job root) -----------------------------
@@ -225,13 +237,93 @@ def build_new_prompt(prompt: str, job_dir: str) -> str:
     return block + ("\n\n" + body if body else "\n")
 
 
-def current_block_version(prompt: str) -> int | None:
-    """Protocol version if the block is present, else None. Block present without a
-    version line reads as 0 (needs upgrade)."""
-    if BEGIN_MARKER not in prompt:
+def find_block_span(prompt: str) -> tuple[int, int] | None:
+    """Locate the single BEGIN..END managed-block span. Returns (start, end)
+    character offsets (end exclusive, i.e. prompt[start:end] is the whole
+    span including both markers), or None if no BEGIN marker is present.
+    Does not itself validate there's exactly one BEGIN — callers that care
+    about duplicates count BEGIN_MARKER occurrences separately."""
+    start = prompt.find(BEGIN_MARKER)
+    if start == -1:
         return None
-    m = PROTOCOL_VERSION_RE.search(prompt)
+    m = _BLOCK_SPAN_RE.search(prompt, start)
+    if m is None or m.start() != start:
+        return None  # BEGIN present but no matching END after it: malformed
+    return (start, m.end())
+
+
+def current_block_version(prompt: str) -> int | None:
+    """Protocol version, read ONLY from inside the BEGIN..END span, else None.
+    None means no BEGIN marker at all. Block present (valid span) without a
+    version line inside it reads as 0 (needs upgrade). A malformed block (no
+    matching END) also reads as None — callers must check block integrity
+    (find_block_span / status_of) separately before trusting this as "no
+    block present"."""
+    span = find_block_span(prompt)
+    if span is None:
+        return None
+    start, end = span
+    m = PROTOCOL_VERSION_RE.search(prompt[start:end])
     return int(m.group(1)) if m else 0
+
+
+def block_integrity(prompt: str) -> str | None:
+    """Cheap structural check, independent of version: 'duplicate-block' if more
+    than one BEGIN marker; 'malformed-block' if a BEGIN has no matching END, or
+    a version line exists only OUTSIDE the BEGIN..END span; else None (fine, or
+    no block at all)."""
+    begin_count = prompt.count(BEGIN_MARKER)
+    if begin_count > 1:
+        return "duplicate-block"
+    if begin_count == 0:
+        return None
+    span = find_block_span(prompt)
+    if span is None:
+        return "malformed-block"  # BEGIN present, no matching END after it
+    start, end = span
+    in_span_has_version = PROTOCOL_VERSION_RE.search(prompt[start:end]) is not None
+    outside = prompt[:start] + prompt[end:]
+    outside_has_version = PROTOCOL_VERSION_RE.search(outside) is not None
+    if outside_has_version and not in_span_has_version:
+        return "malformed-block"
+    return None
+
+
+def _canonicalize(text: str) -> str:
+    """Normalize line endings and strip trailing whitespace per line, so a
+    customization diff isn't triggered by incidental whitespace churn."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines)
+
+
+def find_custom_lines(found_span_text: str, canonical_text: str) -> list[str]:
+    """Lines present in the found span but not in the canonical block for that
+    version, i.e. hand-added/changed lines. Verbatim (post-canonicalization),
+    in order of appearance, de-duplicated."""
+    found = _canonicalize(found_span_text).split("\n")
+    canonical = set(_canonicalize(canonical_text).split("\n"))
+    seen: set[str] = set()
+    extra: list[str] = []
+    for line in found:
+        if line not in canonical and line not in seen:
+            seen.add(line)
+            extra.append(line)
+    return extra
+
+
+def is_block_customized(prompt: str, job_dir: str, version: int) -> tuple[bool, list[str]]:
+    """Compare the found span (canonicalized) against the canonical block for
+    THAT version regenerated with the job's own dir. Returns (is_customized,
+    extra_lines)."""
+    span = find_block_span(prompt)
+    if span is None or version not in BLOCK_HISTORY:
+        return (False, [])
+    start, end = span
+    found_text = _canonicalize(prompt[start:end])
+    canonical_text = _canonicalize(managed_block(job_dir, version))
+    if found_text == canonical_text:
+        return (False, [])
+    return (True, find_custom_lines(prompt[start:end], canonical_text))
 
 
 def choose_quote(content: str) -> tuple[str, str] | None:
@@ -266,7 +358,12 @@ def replace_prompt_in_raw(raw: str, key: str, new_content: str) -> str | None:
 
 def status_of(path: Path, key: str) -> tuple[str, str]:
     """Return (status_code, detail). status_code in: compliant, needs-sidecars,
-    needs-upgrade, needs-block, no-prompt, error, inactive."""
+    needs-upgrade, newer-than-helper, needs-block, malformed-block,
+    duplicate-block, customized-block, no-prompt, error, inactive.
+
+    Detection precedence: inactive -> no-prompt -> duplicate-block ->
+    malformed-block -> needs-block / newer-than-helper / needs-upgrade ->
+    customized-block -> needs-sidecars -> compliant."""
     raw = path.read_text(encoding="utf-8")
     try:
         data = tomllib.loads(raw)
@@ -277,13 +374,24 @@ def status_of(path: Path, key: str) -> tuple[str, str]:
     prompt = data.get(key)
     if not isinstance(prompt, str):
         return ("no-prompt", f"no string key '{key}'")
+
+    integrity = block_integrity(prompt)
+    if integrity == "duplicate-block":
+        return ("duplicate-block", f"{prompt.count(BEGIN_MARKER)} BEGIN markers found")
+    if integrity == "malformed-block":
+        return ("malformed-block", "BEGIN marker with no matching END, or a "
+                                    "version line outside the block span")
+
     ver = current_block_version(prompt)
     if ver is None:
         return ("needs-block", "no protocol block")
+    if ver > PROTOCOL_VERSION:
+        return ("newer-than-helper", f"protocol v{ver} newer than helper v{PROTOCOL_VERSION}")
     if ver < PROTOCOL_VERSION:
         return ("needs-upgrade", f"protocol v{ver} < v{PROTOCOL_VERSION}")
-    if ver > PROTOCOL_VERSION:
-        return ("needs-upgrade", f"protocol v{ver} newer than helper v{PROTOCOL_VERSION}")
+    customized, _ = is_block_customized(prompt, str(path.parent), ver)
+    if customized:
+        return ("customized-block", f"protocol v{ver} block was hand-modified")
     missing = [s for s in REQUIRED_SIDECARS if not (path.parent / s).is_file()]
     if missing:
         return ("needs-sidecars", f"missing {', '.join(missing)}")
@@ -327,42 +435,120 @@ def audit(paths: list[Path], key: str) -> int:
     return 0
 
 
-def apply(paths: list[Path], key: str) -> int:
-    updated, compliant, sidecared, skipped, errors = [], [], [], [], []
+# Statuses apply() refuses to touch — the file must come out byte-identical.
+REFUSED_STATUSES = {"malformed-block", "duplicate-block", "newer-than-helper"}
+REFUSAL_REMEDIATION = {
+    "malformed-block": "fix markers by hand or run --migrate-custom",
+    "duplicate-block": "fix markers by hand or run --migrate-custom",
+    "newer-than-helper": "this helper is older than the block; upgrade the helper",
+    "customized-block": "hand-customized; re-run with --migrate-custom to upgrade "
+                         "and preserve the custom lines, or edit by hand",
+}
+
+
+def _extract_custom_lines(p: Path, prompt: str, ver: int) -> list[str]:
+    """Write <job_dir>/custom-protocol-extract.md for a customized block and
+    return the extracted lines (also used to build the migrated prompt)."""
+    _, extra = is_block_customized(prompt, str(p.parent), ver)
+    extract_path = p.parent / "custom-protocol-extract.md"
+    body = "\n".join(f"- {ln}" for ln in extra) if extra else "(no extra lines detected)"
+    extract_path.write_text(
+        f"# Custom protocol lines (extracted from v{ver} block)\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return extra
+
+
+def _migrated_prompt(prompt: str, job_dir: str, extra_lines: list[str], ver: int) -> str:
+    """Upgrade the block to PROTOCOL_VERSION and append the extracted custom
+    lines to the task body under a clearly-labeled heading."""
+    body = strip_existing_block(prompt).lstrip()
+    heading = f"## Project-specific rules (extracted from protocol block v{ver})"
+    custom = "\n".join(extra_lines)
+    body = f"{body}\n\n{heading}\n{custom}\n" if body else f"{heading}\n{custom}\n"
+    return managed_block(job_dir) + "\n\n" + body
+
+
+def _write_prompt_update(p: Path, key: str, raw: str, new_prompt: str) -> str | None:
+    """Write new_prompt into p, verifying round-trip; restores from backup on
+    failure. Returns an error string, or None on success."""
+    new_raw = replace_prompt_in_raw(raw, key, new_prompt)
+    if not new_raw or new_raw == raw:
+        return "could not place block (unusual prompt quoting?)"
+    bak = p.with_suffix(p.suffix + f".bak.{timestamp()}")
+    bak.write_text(raw, encoding="utf-8")
+    p.write_text(new_raw, encoding="utf-8")
+    check = parse_prompt(p.read_text(encoding="utf-8"), key)
+    if check is None or check.strip() != new_prompt.strip():
+        p.write_text(raw, encoding="utf-8")
+        return f"round-trip failed; restored from {bak.name}"
+    return None
+
+
+def _apply_one(p: Path, key: str, migrate_custom: bool) -> tuple[str, str | None]:
+    """Handle one job. Returns (bucket, error) where bucket is one of:
+    updated, migrated, compliant, refused. error is set only for genuine
+    write failures (bucket stays 'updated'/'migrated' but is reported as an
+    error and NOT counted as success by the caller)."""
+    code, _ = status_of(p, key)
+    raw = p.read_text(encoding="utf-8")
+    prompt = parse_prompt(raw, key) or ""
+    if code in REFUSED_STATUSES:
+        return ("refused", None)
+    if code == "customized-block" and not migrate_custom:
+        ver = current_block_version(prompt) or 0
+        _extract_custom_lines(p, prompt, ver)
+        return ("refused", None)
+    if code == "customized-block" and migrate_custom:
+        ver = current_block_version(prompt) or 0
+        extra = _extract_custom_lines(p, prompt, ver)
+        new_prompt = _migrated_prompt(prompt, str(p.parent), extra, ver)
+        err = _write_prompt_update(p, key, raw, new_prompt)
+        return ("migrated", err) if err is None else ("error", err)
+    if code in ("needs-block", "needs-upgrade"):
+        new_prompt = build_new_prompt(prompt, str(p.parent))
+        err = _write_prompt_update(p, key, raw, new_prompt)
+        return ("updated", err) if err is None else ("error", err)
+    return ("compliant", None)
+
+
+def apply(paths: list[Path], key: str, migrate_custom: bool = False) -> int:
+    updated, migrated, compliant, sidecared = [], [], [], []
+    refused, skipped, errors = [], [], []
     created_files: list[str] = []
     for p in paths:
         code, detail = status_of(p, key)
         if code in ("inactive", "no-prompt", "error"):
             skipped.append((p, f"{code}: {detail}"))
             continue
-        if code in ("needs-block", "needs-upgrade"):
-            raw = p.read_text(encoding="utf-8")
-            new_prompt = build_new_prompt(parse_prompt(raw, key) or "", str(p.parent))
-            new_raw = replace_prompt_in_raw(raw, key, new_prompt)
-            if not new_raw or new_raw == raw:
-                errors.append((p, "could not place block (unusual prompt quoting?)"))
-                continue
-            bak = p.with_suffix(p.suffix + f".bak.{timestamp()}")
-            bak.write_text(raw, encoding="utf-8")
-            p.write_text(new_raw, encoding="utf-8")
-            # Verify round-trip; restore on any mismatch.
-            check = parse_prompt(p.read_text(encoding="utf-8"), key)
-            if check is None or check.strip() != new_prompt.strip():
-                p.write_text(raw, encoding="utf-8")
-                errors.append((p, f"round-trip failed; restored from {bak.name}"))
-                continue
-            updated.append(p)
-        else:
-            compliant.append(p)
+        bucket, err = _apply_one(p, key, migrate_custom)
+        if bucket == "error":
+            errors.append((p, err))
+            continue
+        if bucket == "refused":
+            refused.append((p, f"{code}: {REFUSAL_REMEDIATION.get(code, detail)}"))
+            continue
+        {"updated": updated, "migrated": migrated, "compliant": compliant}[bucket].append(p)
         before = len(created_files)
         scaffold_sidecars(p.parent, created_files)
-        if len(created_files) > before and p not in updated:
+        if len(created_files) > before and p not in updated and p not in migrated:
             sidecared.append(p)
 
+    _print_apply_report(updated, migrated, compliant, sidecared, created_files,
+                         skipped, refused, errors)
+    return 1 if errors else 0
+
+
+def _print_apply_report(updated, migrated, compliant, sidecared, created_files,
+                         skipped, refused, errors) -> None:
     print(f"Automation Optimizer apply — protocol v{PROTOCOL_VERSION}\n")
     print(f"Updated ({len(updated)}):")
     for p in updated:
         print(f"  {p}")
+    if migrated:
+        print(f"Migrated (custom rules preserved) ({len(migrated)}):")
+        for p in migrated:
+            print(f"  {p}")
     print(f"Already compliant ({len(compliant)}):")
     for p in compliant:
         print(f"  {p}")
@@ -377,11 +563,43 @@ def apply(paths: list[Path], key: str) -> int:
         print(f"Skipped ({len(skipped)}):")
         for p, why in skipped:
             print(f"  {p} — {why}")
+    if refused:
+        print(f"Refused ({len(refused)}):")
+        for p, why in refused:
+            print(f"  {p} — {why}")
     if errors:
         print(f"Errors ({len(errors)}):")
         for p, why in errors:
             print(f"  {p} — {why}")
-    return 1 if errors else 0
+
+
+def _strict_check_one(p: Path, key: str, prompt: str) -> str | None:
+    """Return a precise failure reason naming the tripped condition, or None
+    if this job's block/sections/sidecars are all in order. Checked in the
+    same precedence as status_of: duplicate -> malformed -> version ->
+    newer-than-helper -> sections -> sidecars."""
+    begin_count = prompt.count(BEGIN_MARKER)
+    if begin_count > 1:
+        return f"duplicate-block: {p} has {begin_count} BEGIN markers (expected exactly 1)"
+    integrity = block_integrity(prompt)
+    if integrity == "malformed-block":
+        return (f"malformed-block: {p} has a BEGIN marker with no matching END, "
+                f"or a version line outside the block span")
+    ver = current_block_version(prompt)
+    if ver is None:
+        return f"needs-block: {p} has no protocol block"
+    if ver > PROTOCOL_VERSION:
+        return (f"newer-than-helper: {p} carries protocol v{ver}, "
+                f"newer than this helper's v{PROTOCOL_VERSION}")
+    if ver != PROTOCOL_VERSION:
+        return f"{p}: protocol version {ver} != required v{PROTOCOL_VERSION}"
+    missing_sections = [s for s in REQUIRED_SECTIONS if s not in prompt]
+    if missing_sections:
+        return f"{p}: missing protocol sections: {', '.join(missing_sections)}"
+    missing_files = [s for s in REQUIRED_SIDECARS if not (p.parent / s).is_file()]
+    if missing_files:
+        return f"{p}: missing sidecars: {', '.join(missing_files)}"
+    return None
 
 
 def strict(paths: list[Path], key: str) -> int:
@@ -401,16 +619,9 @@ def strict(paths: list[Path], key: str) -> int:
         if not isinstance(prompt, str):
             failures.append((p, f"no string key '{key}'"))
             continue
-        ver = current_block_version(prompt)
-        if ver != PROTOCOL_VERSION:
-            failures.append((p, f"protocol version {ver} != required v{PROTOCOL_VERSION}"))
-            continue
-        missing_sections = [s for s in REQUIRED_SECTIONS if s not in prompt]
-        if missing_sections:
-            failures.append((p, f"missing protocol sections: {', '.join(missing_sections)}"))
-        missing_files = [s for s in REQUIRED_SIDECARS if not (p.parent / s).is_file()]
-        if missing_files:
-            failures.append((p, f"missing sidecars: {', '.join(missing_files)}"))
+        why = _strict_check_one(p, key, prompt)
+        if why:
+            failures.append((p, why))
 
     print(f"Strict validation — {checked} active automation(s) checked, "
           f"protocol v{PROTOCOL_VERSION}\n")
@@ -589,6 +800,9 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Optimize Codex automation.toml files.")
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
+    ap.add_argument("--migrate-custom", action="store_true",
+                    help="with --apply: upgrade hand-customized blocks too, preserving "
+                         "the custom lines by appending them to the task body")
     ap.add_argument("--strict", action="store_true", help="validate per-job block + sidecars")
     ap.add_argument("--fleet", nargs="?", const=True, default=False,
                     metavar="SUITE_TOML",
@@ -609,7 +823,7 @@ def main(argv: list[str]) -> int:
     if args.strict:
         return strict(paths, args.prompt_key)
     if args.apply:
-        return apply(paths, args.prompt_key)
+        return apply(paths, args.prompt_key, migrate_custom=args.migrate_custom)
     return audit(paths, args.prompt_key)
 
 
