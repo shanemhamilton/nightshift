@@ -38,31 +38,33 @@ Treat as a hint, never as proof. Re-check live state every run.
 ```
 
 ## last-run.md
+Canonical shape is a `---`-delimited front-matter block, then free prose notes. Parsed by `scripts/state_schema.py` (`parse_last_run`), which also degrades gracefully across two older on-disk shapes still found on the live fleet (see below) — schema="frontmatter" | "template" | "legacy".
+
 ```markdown
-# Last run — <automation id>
-- when: <ISO timestamp>
-- outcome: success | no-op | partial | failed
-- runtime_s: <int>
-- items_touched: <int>
-- units_completed: <int>            # bounded units finished this run (continuation loop)
-- stop_reason: <budget | queue-drained | repeated-failure | approval-boundary | no-op>
-- retries: <int>
-- failure_class: <none | transient | config | baseline | blocked | needs-human>
-- rollback: <branch / issue id / commit sha, or n/a>
-- notes: <one line>
+---
+when: <ISO timestamp>
+outcome: success | no-op | partial | failed
+units_completed: <int>              # bounded units finished this run (continuation loop)
+stop_reason: <budget | queue-drained | repeated-failure | approval-boundary | no-op>
+failure_class: <none | transient | config | baseline | blocked | needs-human>
+runtime_s: <int>
+merged_shas: [<sha>, <sha>]
+branches: [<branch>]
+tracker_ids: [<id>]
+---
+<free prose notes>
 ```
 
+Field list (`state_schema.SCHEMA_FIELDS`): `when`, `outcome`, `units_completed` (int), `stop_reason`, `failure_class`, `runtime_s` (int), `merged_shas` (list), `branches` (list), `tracker_ids` (list).
+
+Older shapes the parser also reads (never write these, only read):
+- **template** — the earlier `SIDECARS["last-run.md"]` bullet form: `# Last run` header then `- key: value` bullets (e.g. `- outcome: success`, `- rollback: n/a`). Recognized fields map onto the same names; unknown bullets (like `rollback`) are ignored; `notes:` bullets become prose.
+- **legacy** — freeform prose with no recognizable fields at all. The parser returns `{schema: "legacy", raw: <full text>, ...blank fields}` and never raises.
+
+`parse_last_run(path)` returns `None` only if the file does not exist; otherwise it always returns a dict. `render_frontmatter(record, prose)` writes the canonical NEW shape back out.
+
 ## runs/<timestamp>.md
-```markdown
-# Run <ISO timestamp> — <automation id>
-- outcome: <...>
-- changed_fingerprints: <which watched values moved, or "none → short-circuited">
-- actions: <bullet list of what was done>
-- evidence: <test names / diff ids / tracker ids — NOT full logs>
-- queued_for_approval: <ids or none>
-- rollback: <how to undo, or n/a>
-- runtime_s / retries: <...>
-```
+Same front-matter shape and parser (`parse_run_entry`) as `last-run.md` above — one entry per dated run.
 
 ## known-failures.md
 ```markdown

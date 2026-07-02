@@ -164,9 +164,18 @@ SIDECARS = {
         "- last_success:\n\n## Stable decisions\n\n## Consecutive failures\n- count: 0\n"
     ),
     "last-run.md": (
-        "# Last run\n- when:\n- outcome:\n- runtime_s:\n- items_touched:\n"
-        "- units_completed: 0\n- stop_reason:\n- retries:\n"
-        "- failure_class: none\n- rollback: n/a\n- notes:\n"
+        "---\n"
+        "when:\n"
+        "outcome:\n"
+        "units_completed: 0\n"
+        "stop_reason:\n"
+        "failure_class: none\n"
+        "runtime_s:\n"
+        "merged_shas: []\n"
+        "branches: []\n"
+        "tracker_ids: []\n"
+        "---\n"
+        "No runs yet.\n"
     ),
     "priority-queue.md": (
         "# Priority queue\nHighest-value unblocked targets, most important first.\n"
