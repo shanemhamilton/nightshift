@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-07-01
+
+### Fixed
+- `discover_agents.py` and the install selftest hardcoded the installed skill
+  directory name as `automation-optimizer`; it is actually the source folder name
+  (`nightshift` when the public repo is cloned). Discovery now derives `SKILL_NAME`
+  from the repo root, so a correctly-installed skill is no longer reported as
+  `(not installed)` on a `nightshift` clone, and CI passes.
+
 ## [0.7.0] — 2026-07-01
 
 Fleet-hardening release driven by a deep audit of the live overnight fleet. The managed
