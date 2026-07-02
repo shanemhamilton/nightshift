@@ -176,7 +176,7 @@ def scan_agent(agent: str, cfg: dict, home: Path) -> dict:
         return out
 
     idx = suite_index(root)
-    job_file_name = Path(cfg["automations_glob"]).name if cfg["automations_glob"] else None
+    job_file_name = cfg.get("job_file")
     for d in sorted(root.iterdir()):
         if not d.is_dir():
             continue

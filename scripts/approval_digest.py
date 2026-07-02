@@ -47,6 +47,14 @@ _spec = importlib.util.spec_from_file_location("ao_adapters", _AA_PATH)
 AA = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(AA)  # type: ignore
 
+# Same by-path import for the suite-manifest reader (iter_suite_manifests), so
+# project resolution can be looked up from the manifests instead of guessed
+# from a job id's first hyphen segment (see F2 / _project_of below).
+_OPT_PATH = Path(__file__).resolve().parent / "optimize_codex_automations.py"
+_opt_spec = importlib.util.spec_from_file_location("ao_optimize", _OPT_PATH)
+OPT = importlib.util.module_from_spec(_opt_spec)
+_opt_spec.loader.exec_module(OPT)  # type: ignore
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover - dev fallback
@@ -101,20 +109,66 @@ def _roots(codex_home: str | None) -> list[tuple[str, Path]]:
 
 
 def _project_of(job_id: str) -> str:
-    """Project label = the namespaced id's first slug segment (skincrafter-... )."""
-    head = job_id.split("-", 1)[0]
-    return head.replace("_", " ").title() if head else "(unknown)"
+    """FALLBACK ONLY (no suite-manifest match): the full job id, unchanged.
+
+    A job id's first hyphen segment is NOT reliably its project — e.g.
+    "code-security" is a template name, not "Code". Prefer build_project_index()
+    + resolve_project() below, which read the real [suite].project label out of
+    the manifests; this is only what a job without ANY manifest entry gets."""
+    return job_id or "(unknown)"
 
 
-def iter_queue_files(codex_home: str | None):
-    """Yield (agent, project, job_id, path) for each human-approval.md present."""
+def build_project_index(codex_home: str | None) -> dict[str, str]:
+    """{job_id: project label} from every [suite]/[[job]] manifest under the
+    SAME codex_home used to scan queues (so --codex-home stays honored end to
+    end, including in tests that point both at a temp dir). Tolerant: a bad or
+    unreadable manifest is skipped, never raised — matches iter_suite_manifests'
+    existing best-effort style."""
+    home = Path(codex_home).expanduser() if codex_home \
+        else Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    index: dict[str, str] = {}
+    if tomllib is None:
+        return index
+    try:
+        manifests = OPT.iter_suite_manifests(home)
+    except OSError:
+        return index
+    for path in manifests:
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        project = (data.get("suite") or {}).get("project")
+        if not project:
+            continue
+        for job in data.get("job", []):
+            jid = job.get("id")
+            if jid:
+                index.setdefault(jid, project)
+    return index
+
+
+def resolve_project(job_id: str, project_index: dict[str, str]) -> str:
+    """A job's project label: the manifest-declared [suite].project when the
+    job id is indexed, else the full job id (never the first hyphen segment)."""
+    return project_index.get(job_id) or _project_of(job_id)
+
+
+def iter_queue_files(codex_home: str | None, project_index: dict[str, str] | None = None):
+    """Yield (agent, project, job_id, path) for each human-approval.md present.
+
+    project_index is {job_id: project} built from the manifests under the same
+    codex_home (see build_project_index); pass None to fall back to the full
+    job id for every job (used only by callers that don't need manifest
+    resolution, e.g. ad-hoc scripts — main() always builds and passes one)."""
+    index = project_index if project_index is not None else {}
     for agent, root in _roots(codex_home):
         for job_dir in sorted(p for p in root.iterdir() if p.is_dir()):
             if job_dir.name.startswith("."):  # .archive/.disabled
                 continue
             f = job_dir / APPROVAL_FILE
             if f.is_file():
-                yield agent, _project_of(job_dir.name), job_dir.name, f
+                yield agent, resolve_project(job_dir.name, index), job_dir.name, f
 
 
 def _is_container(heading: str) -> bool:
@@ -730,7 +784,8 @@ def main(argv: list[str]) -> int:
     today = _dt.date.today()
     items: list[dict] = []
     malformed: list[tuple[str, str]] = []
-    for agent, project, job_id, path in iter_queue_files(args.codex_home):
+    project_index = build_project_index(args.codex_home)
+    for agent, project, job_id, path in iter_queue_files(args.codex_home, project_index):
         try:
             parsed, bad = parse_queue(path.read_text(encoding="utf-8"))
         except OSError as e:

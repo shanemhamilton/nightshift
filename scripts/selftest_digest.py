@@ -238,6 +238,72 @@ def test_nonexistent_codex_home() -> None:
           "0 item(s)" in out, out)
 
 
+PENDING_ITEM = """## Rotate the staging API key
+- risk: medium
+- suggested_default: rotate it
+- action: rotate staging key in vault
+- first_seen: {date}
+- evidence: automations/skincrafter/runs/2026-06-20.md
+"""
+
+
+def test_project_from_manifest(root: Path) -> None:
+    """F2: a job listed in a suite manifest resolves to the manifest's
+    [suite].project label, NOT a Title-Cased first-hyphen-segment guess."""
+    codex_home = root / "manifest-home"
+    autos = codex_home / "automations"
+    today = _dt.date.today()
+    fseen = (today - _dt.timedelta(days=1)).isoformat()
+
+    suites_dir = autos / "suites"
+    suites_dir.mkdir(parents=True, exist_ok=True)
+    (suites_dir / "skincrafter.toml").write_text(
+        '[suite]\n'
+        'project = "SkinCrafter"\n'
+        'workspace = "/tmp/skincrafter"\n\n'
+        '[[job]]\n'
+        'id = "skincrafter-code-security"\n'
+        'template = "P2"\n',
+        encoding="utf-8")
+    make_job(autos, "skincrafter-code-security", PENDING_ITEM.format(date=fseen))
+
+    rc, out = run_main(["--codex-home", str(codex_home)])
+    check("manifest project: exits 0", rc == 0, out)
+    check("manifest project: shows SkinCrafter from the manifest",
+          "SkinCrafter —" in out, out)
+    check("manifest project: does NOT show split-guess 'Skincrafter'",
+          "Skincrafter —" not in out, out)
+    check("manifest project: does NOT show first-segment guess 'Code'",
+          "Code —" not in out, out)
+
+    rc, out = run_main(["--json", "--codex-home", str(codex_home)])
+    check("manifest project (json): exits 0", rc == 0, out)
+    check("manifest project (json): project is SkinCrafter",
+          '"project": "SkinCrafter"' in out, out)
+
+
+def test_project_fallback_full_job_id(root: Path) -> None:
+    """F2: a job with NO manifest entry falls back to the full job id (e.g.
+    "code-security"), never the first hyphen segment ("Code")."""
+    codex_home = root / "fallback-home"
+    autos = codex_home / "automations"
+    today = _dt.date.today()
+    fseen = (today - _dt.timedelta(days=1)).isoformat()
+    make_job(autos, "code-security", PENDING_ITEM.format(date=fseen))
+
+    rc, out = run_main(["--codex-home", str(codex_home)])
+    check("fallback project: exits 0", rc == 0, out)
+    check("fallback project: shows full job id 'code-security'",
+          "code-security —" in out, out)
+    check("fallback project: does NOT show first-segment guess 'Code'",
+          "Code —" not in out, out)
+
+    rc, out = run_main(["--json", "--codex-home", str(codex_home)])
+    check("fallback project (json): exits 0", rc == 0, out)
+    check("fallback project (json): project is full job id",
+          '"project": "code-security"' in out, out)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -247,6 +313,8 @@ def main() -> int:
         test_aging(root)
         test_emit_launchd_cron(root)
         test_nonexistent_codex_home()
+        test_project_from_manifest(root)
+        test_project_fallback_full_job_id(root)
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0

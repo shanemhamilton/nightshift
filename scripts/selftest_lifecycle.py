@@ -31,6 +31,8 @@ def _load(name, fn):
 
 LC = _load("lc", "lifecycle.py")
 OPT = _load("opt", "optimize_codex_automations.py")
+DA = _load("da", "discover_agents.py")
+PP2 = _load("pp2", "profile_project.py")
 
 PASSED = 0
 FAILED = 0
@@ -519,6 +521,88 @@ def main() -> int:
         check("rrule_to_cron round-trips a weekly cron",
               LC.MAT.rrule_to_cron(LC.MAT.cron_to_rrule(weekly_cron)) == weekly_cron,
               LC.MAT.cron_to_rrule(weekly_cron))
+
+        # --- F1: gemini jobs must not be falsely reported ORPHAN -----------
+        f1_home = root / ".f1-gemini-home"
+        f1_job_dir = f1_home / ".gemini" / "automations" / "demo-job"
+        f1_job_dir.mkdir(parents=True)
+        f1_prompt = (OPT.managed_block(str(f1_job_dir)) + "\n\nDo the thing.\n")
+        (f1_job_dir / "prompt.md").write_text(f1_prompt, encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc_f1 = DA.main(["--home", str(f1_home), "--agent", "gemini"])
+        f1_out = buf.getvalue()
+        check("F1 discover gemini exits 0", rc_f1 == 0, f1_out)
+        check("F1 gemini job with prompt.md is NOT reported ORPHAN",
+              "ORPHAN" not in f1_out, f1_out)
+        check("F1 gemini job is reflected as a real job (protocol block detected)",
+              "demo-job" in f1_out and "protocol v" in f1_out, f1_out)
+
+        # --- F3: cron_to_rrule BYMONTHDAY + unsupported-field warning ------
+        monthly_rrule = LC.MAT.cron_to_rrule("30 2 5 * *")
+        check("F3 numeric dom emits BYMONTHDAY=5",
+              "BYMONTHDAY=5" in monthly_rrule, monthly_rrule)
+        check("F3 numeric dom emits FREQ=MONTHLY",
+              "FREQ=MONTHLY" in monthly_rrule, monthly_rrule)
+
+        weekly_rrule_f3 = LC.MAT.cron_to_rrule("0 3 * * 1")
+        check("F3 dow-set schedule is still WEEKLY",
+              "FREQ=WEEKLY" in weekly_rrule_f3, weekly_rrule_f3)
+
+        unsupported_job = {"id": "demo-app-unsupported-cron", "template": "P1",
+                            "phase": "producer", "merge_authority": False,
+                            "schedule": "*/15 * * * *", "write_scope": ["**"],
+                            "mode": "active", "hands_off_to": "demo-app-repo-hygiene"}
+        unsupported_prompt = LC.MAT.build_prompt(
+            unsupported_job, str(autos / unsupported_job["id"]))
+        unsupported_toml = LC.MAT.emit_codex_toml(
+            unsupported_job, unsupported_prompt, str(ws), None)
+        check("F3 unsupported cron field triggers a schedule-warning comment",
+              "# schedule-warning:" in unsupported_toml, unsupported_toml)
+
+        supported_job = dict(unsupported_job)
+        supported_job["id"] = "demo-app-supported-cron"
+        supported_job["schedule"] = "30 2 5 * *"
+        supported_prompt = LC.MAT.build_prompt(
+            supported_job, str(autos / supported_job["id"]))
+        supported_toml = LC.MAT.emit_codex_toml(
+            supported_job, supported_prompt, str(ws), None)
+        check("F3 supported cron (numeric dom) emits no schedule-warning",
+              "# schedule-warning:" not in supported_toml, supported_toml)
+
+        # --- F4: security_scanner gated on the actual audit tool per stack -
+        f4_py_root = root / "f4-py-project"
+        f4_py_root.mkdir()
+        (f4_py_root / "requirements.txt").write_text("flask\n", encoding="utf-8")
+
+        orig_which = PP2.shutil.which
+        try:
+            PP2.shutil.which = lambda name: None  # nothing on PATH
+            caps_no_tool = PP2.detect(f4_py_root)
+            check("F4 python project WITHOUT pip-audit on PATH does NOT claim security_scanner",
+                  caps_no_tool["security_scanner"] is False, caps_no_tool)
+
+            PP2.shutil.which = lambda name: ("/usr/bin/pip-audit"
+                                             if name == "pip-audit" else None)
+            caps_with_tool = PP2.detect(f4_py_root)
+            check("F4 python project WITH pip-audit on PATH claims security_scanner",
+                  caps_with_tool["security_scanner"] is True, caps_with_tool)
+            check("F4 evidence names pip-audit",
+                  "pip-audit" in caps_with_tool["evidence"].get("security_scanner", ""),
+                  caps_with_tool["evidence"])
+
+            f4_npm_root = root / "f4-npm-project"
+            f4_npm_root.mkdir()
+            (f4_npm_root / "package-lock.json").write_text("{}", encoding="utf-8")
+            PP2.shutil.which = lambda name: None  # no tools at all on PATH
+            caps_npm = PP2.detect(f4_npm_root)
+            check("F4 npm project claims security_scanner regardless of PATH",
+                  caps_npm["security_scanner"] is True, caps_npm)
+            check("F4 npm evidence names npm audit",
+                  "npm audit" in caps_npm["evidence"].get("security_scanner", ""),
+                  caps_npm["evidence"])
+        finally:
+            PP2.shutil.which = orig_which
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0

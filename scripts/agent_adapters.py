@@ -25,6 +25,7 @@ ADAPTERS = {
         "automations_glob": "~/.codex/automations/*/automation.toml",
         "automations_root": "~/.codex/automations",
         "job_layout": "dir",                 # <root>/<id>/automation.toml
+        "job_file": "automation.toml",       # filename discovery looks for in each job dir
         "prompt_key": "prompt",              # flat TOML string (escaped \\n)
         "schedule_field": "rrule",           # iCalendar RRULE, e.g. FREQ=WEEKLY;BYHOUR=2
         "cwd_field": "cwds",                 # array, plural
@@ -50,6 +51,7 @@ ADAPTERS = {
         "automations_glob": "~/.claude/scheduled-tasks/*/SKILL.md",
         "automations_root": "~/.claude/scheduled-tasks",
         "job_layout": "dir",                 # <root>/<name>/SKILL.md
+        "job_file": "SKILL.md",              # filename discovery looks for in each job dir
         "prompt_key": None,                  # the SKILL.md body IS the prompt
         "schedule_field": None,              # managed by the Claude daemon
         "cwd_field": None,
@@ -73,6 +75,7 @@ ADAPTERS = {
         "automations_glob": None,
         "automations_root": "~/.gemini/automations",   # our convention for prompt files
         "job_layout": "dir",
+        "job_file": "prompt.md",             # filename discovery looks for in each job dir
         "prompt_key": None,                  # prompt stored as prompt.md
         "schedule_field": None,
         "cwd_field": None,
@@ -101,6 +104,7 @@ ADAPTERS = {
         "automations_glob": None,
         "automations_root": None,
         "job_layout": "cloud",
+        "job_file": None,                    # cloud automations have no local job file
         "prompt_key": None,
         "schedule_field": None,
         "cwd_field": None,
