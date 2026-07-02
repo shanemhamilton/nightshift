@@ -217,6 +217,21 @@ def main() -> int:
             check("emit_codex_toml refuses a Haiku-class model",
                   "haiku" in str(e).lower(), str(e))
 
+        # --- project-queue scaffold: setup creates it, format is correct ---
+        queue_path = ws / ".codex" / "automations" / "PROJECT-QUEUE.md"
+        check("PROJECT-QUEUE.md scaffolded by setup", queue_path.is_file())
+        queue_text = queue_path.read_text(encoding="utf-8") if queue_path.is_file() else ""
+        check("PROJECT-QUEUE.md has Objectives section", "## Objectives" in queue_text)
+        check("PROJECT-QUEUE.md has Open threads section", "## Open threads" in queue_text)
+
+        # --- project-queue scaffold: idempotent, never overwrites ----------
+        sentinel = "\n<!-- sentinel: do not clobber -->\n"
+        queue_path.write_text(queue_text + sentinel, encoding="utf-8")
+        second = LC.PP.scaffold_project_queue(ws, "demo-app")
+        check("second scaffold call returns None (already exists)", second is None)
+        check("sentinel survives a second scaffold call",
+              sentinel in queue_path.read_text(encoding="utf-8"))
+
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
 

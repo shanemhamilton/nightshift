@@ -175,6 +175,9 @@ def cmd_setup(args) -> int:
         materialize_job(targets(args.agent), j, cwd=suite["workspace"],
                         model=args.model, apply=True, home_override=args.home_override,
                         project=suite.get("project"))
+    scaffolded = PP.scaffold_project_queue(Path(suite["workspace"]), suite["project"])
+    if scaffolded:
+        print(f"scaffolded {scaffolded}")
     return 0
 
 

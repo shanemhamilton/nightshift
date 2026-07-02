@@ -346,6 +346,33 @@ def decide(caps: dict) -> tuple[list[dict], list[tuple[str, str]]]:
     return jobs, skipped
 
 
+# --- project-queue scaffold ---------------------------------------------------
+PROJECT_QUEUE_TEMPLATE = """# Project queue — {project}
+
+## Objectives
+_Human-editable. What this project's automations should drive toward. One bullet each._
+- (add objectives here)
+
+## Open threads
+_Machine-maintained by automations (escalation/closeout). One `### <thread-id>` block per open thread; fields: owner_job, status (open|parked|resolved), next_action, first_seen (ISO date)._
+"""
+
+
+def scaffold_project_queue(workspace: Path, project: str) -> Path | None:
+    """Ensure `<workspace>/.codex/automations/PROJECT-QUEUE.md` exists.
+
+    Writes the scaffold ONLY if the file is not already there — never overwrites
+    human-edited objectives or machine-maintained open threads. Returns the path
+    when it created the file, None when it already existed.
+    """
+    path = Path(workspace) / ".codex" / "automations" / "PROJECT-QUEUE.md"
+    if path.exists():
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(PROJECT_QUEUE_TEMPLATE.format(project=project), encoding="utf-8")
+    return path
+
+
 # --- project-scope ids + display names ---------------------------------------
 def localize(jobs: list[dict], project: str) -> list[dict]:
     """Project-scope every job id and stamp a human display name, in place.
@@ -505,6 +532,9 @@ def cmd_profile(args) -> int:
         outp.write_text(toml_text, encoding="utf-8")
         print(f"Wrote draft suite → {outp}\n")
         print(rationale)
+        scaffolded = scaffold_project_queue(root, root.name)
+        if scaffolded:
+            print(f"scaffolded {scaffolded}")
         print(f"\nNext: validate with  optimize_codex_automations.py --fleet {outp}")
         print(f"Then: confirm with   profile_project.py approve --suite {outp}")
     else:

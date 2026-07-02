@@ -8,6 +8,8 @@ The lifecycle below is implemented by `scripts/profile_project.py` (`profile` an
 
 > To manage a single job after a suite exists — add one pattern, update a knob, or retire a job on any agent — use the lifecycle verbs in `reference/lifecycle.md` (`scripts/lifecycle.py setup|add|remove|update`). `setup` and `add` are the composer's propose→confirm→install lifecycle wrapped as one command per scope.
 
+`setup`/`profile` also scaffold a per-project `PROJECT-QUEUE.md` the first time they materialize a suite into a workspace — see `reference/project-queue.md` for the format and ownership rules.
+
 ## Principle: adaptive, not targeted
 
 Templates do **not** hardcode project commands. Each job discovers what it needs at runtime and adapts scope to what it finds. A template that can't find a required capability degrades to **propose-only** and records why — it never guesses a command. This keeps one template working across a backend repo, an iOS app, and a mixed workspace without per-project rewrites. The hardcoded specifics a job *learns* over time live in its memory and (durably) in the project's `AGENTS.md`, not in the template.
