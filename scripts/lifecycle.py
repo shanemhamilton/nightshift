@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import importlib.util
 import os
 import sys
@@ -162,17 +163,25 @@ def cmd_setup(args) -> int:
     if validate(suite, jobs) != 0:
         print("\nProposed suite is not internally consistent; not installing.")
         return 1
-    suite_path = Path(args.suite).expanduser() if args.suite else root / "suite.toml"
+    agent = args.agent or "codex"
+    if args.suite:
+        suite_path = Path(args.suite).expanduser()
+    elif args.local:
+        suite_path = root / ".codex" / "automations" / "suite.toml"
+    else:
+        suite_path = OPT.suite_manifest_path(OPT.codex_home(args.home_override),
+                                             suite["project"])
     if not args.apply:
         print(f"\nDry run. Re-run with --apply to write {suite_path} and install "
-              f"into: {', '.join(targets(args.agent))}.")
+              f"into: {', '.join(targets(agent))}.")
         return 0
     for j in jobs:
+        j["agents"] = targets(agent)
         stamp_approval(j, args.by)
     save_suite(suite_path, suite, jobs, header="# Installed by lifecycle.py setup.")
     print(f"\nWrote {suite_path}. Materializing {len(jobs)} job(s):")
     for j in jobs:
-        materialize_job(targets(args.agent), j, cwd=suite["workspace"],
+        materialize_job(targets(agent), j, cwd=suite["workspace"],
                         model=args.model, apply=True, home_override=args.home_override,
                         project=suite.get("project"))
     scaffolded = PP.scaffold_project_queue(Path(suite["workspace"]), suite["project"])
@@ -217,10 +226,12 @@ def cmd_add(args) -> int:
         print(f"\nDry run. Re-run with --apply to add '{cand['id']}' "
               f"({args.pattern}) and install it.")
         return 0
+    agent = args.agent or "codex"
+    cand["agents"] = targets(agent)
     stamp_approval(cand, args.by)
     save_suite(suite_path, suite, jobs, header="# Job added by lifecycle.py add.")
     print(f"\nAdded '{cand['id']}'. Materializing:")
-    materialize_job(targets(args.agent), cand, cwd=workspace, model=args.model,
+    materialize_job(targets(agent), cand, cwd=workspace, model=args.model,
                     apply=True, home_override=args.home_override,
                     project=project)
     return 0
@@ -255,11 +266,16 @@ def cmd_update(args) -> int:
         print(f"\nDry run{flag}. Re-run with --apply to confirm and re-install "
               f"'{args.id}'.")
         return 0
+    if args.agent:
+        agents = targets(args.agent)
+        job["agents"] = agents
+    else:
+        agents = job.get("agents") or ["codex"]
     stamp_approval(job, args.by)
     save_suite(suite_path, suite, jobs, header="# Job updated by lifecycle.py update.")
     workspace = suite.get("workspace", ".")
     print(f"\nUpdated '{args.id}'. Re-materializing:")
-    materialize_job(targets(args.agent), job, cwd=workspace, model=args.model,
+    materialize_job(agents, job, cwd=workspace, model=args.model,
                     apply=True, home_override=args.home_override,
                     project=suite.get("project"))
     return 0
@@ -304,15 +320,92 @@ def cmd_remove(args) -> int:
         return 0
     save_suite(suite_path, suite, new_jobs, header="# Job retired by lifecycle.py remove.")
     print(f"\n{action} '{args.id}':")
-    retire_job(targets(args.agent), job, purge=args.purge, apply=True,
+    agents = targets(args.agent) if args.agent else (job.get("agents") or ["codex"])
+    retire_job(agents, job, purge=args.purge, apply=True,
                home_override=args.home_override)
+    return 0
+
+
+def _resolve_adopt_suite_path(args) -> Path:
+    """--suite as a literal existing file path wins; else treat it as a project
+    slug and resolve to the suites/ manifest path for that slug."""
+    candidate = Path(args.suite).expanduser()
+    if candidate.is_file():
+        return candidate
+    home = OPT.codex_home(args.home_override)
+    return OPT.suite_manifest_path(home, args.suite)
+
+
+def cmd_adopt(args) -> int:
+    if args.template != "custom" and args.template not in OPT.KNOWN_TEMPLATES:
+        print(f"--template must be one of {sorted(OPT.KNOWN_TEMPLATES)} or 'custom', "
+              f"got {args.template!r}.")
+        return 2
+    home = OPT.codex_home(args.home_override)
+    live_toml = home / "automations" / args.job_id / "automation.toml"
+    if not live_toml.is_file():
+        print(f"No live job '{args.job_id}' at {live_toml}.")
+        return 2
+    data = tomllib.loads(live_toml.read_text(encoding="utf-8"))
+    cwds = data.get("cwds") or []
+    if not cwds:
+        print(f"Live job '{args.job_id}' has no cwds; cannot infer workspace.")
+        return 2
+    workspace = cwds[0]
+    live_prompt = data.get("prompt", "")
+    schedule = MAT.rrule_to_cron(data.get("rrule", ""))
+
+    suite_path = _resolve_adopt_suite_path(args)
+    if suite_path.is_file():
+        suite, jobs = load_suite(suite_path)
+    else:
+        # --suite wasn't an existing file, so _resolve_adopt_suite_path treated
+        # it as a project slug; start a fresh manifest for that project.
+        suite, jobs = {"project": args.suite, "workspace": workspace}, []
+    suite.setdefault("workspace", workspace)
+
+    if find_job(jobs, args.job_id):
+        print(f"Job id '{args.job_id}' already exists in {suite_path}.")
+        return 1
+
+    job = {
+        "id": args.job_id,
+        "template": args.template,
+        "phase": args.phase,
+        "schedule": schedule,
+        "write_scope": args.scope or [],
+        "merge_authority": bool(args.merge_authority),
+        "mode": "active",
+    }
+    if args.template in OPT.KNOWN_TEMPLATES:
+        job["template_version"] = OPT.PROTOCOL_VERSION
+    else:
+        job["prompt_hash"] = hashlib.sha256(live_prompt.encode("utf-8")).hexdigest()[:16]
+
+    candidate_jobs = jobs + [job]
+    if validate(suite, candidate_jobs) != 0:
+        print("\nAdopting this job breaks the fleet; not written.")
+        return 1
+
+    if not args.apply:
+        print(f"\nDry run. Re-run with --apply to adopt '{args.job_id}' "
+              f"({args.template}) into {suite_path}.")
+        return 0
+
+    job["agents"] = targets(args.agent or "codex")
+    stamp_approval(job, args.by)
+    jobs.append(job)
+    save_suite(suite_path, suite, jobs, header="# Job adopted by lifecycle.py adopt.")
+    print(f"\nAdopted '{args.job_id}' into {suite_path} "
+          f"(schedule '{schedule}', workspace '{workspace}'). Live prompt untouched.")
     return 0
 
 
 # --- cli ---------------------------------------------------------------------
 def _common(p, *, needs_suite=True):
-    p.add_argument("--agent", default="codex", choices=ALL_AGENTS + ["all"],
-                   help="target agent (default: codex)")
+    p.add_argument("--agent", default=None, choices=ALL_AGENTS + ["all"],
+                   help="target agent (setup/add default: codex; update/remove "
+                        "default: the job's recorded agents, else codex)")
     p.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     p.add_argument("--by", default=os.environ.get("USER", "unknown"), help="approver name")
     p.add_argument("--model", default=None, help="model to set on the job (optional)")
@@ -328,7 +421,12 @@ def main(argv: list[str]) -> int:
 
     s = sub.add_parser("setup", help="profile a project and install its suite")
     s.add_argument("path", nargs="?", default=".", help="project dir (default: .)")
-    s.add_argument("--suite", default=None, help="suite.toml output (default: <repo>/suite.toml)")
+    s.add_argument("--suite", default=None,
+                   help="suite.toml output path (default: <codex-home>/automations/"
+                        "suites/<project-slug>.toml)")
+    s.add_argument("--local", action="store_true",
+                   help="write to <repo>/.codex/automations/suite.toml instead "
+                        "(ignored if --suite is given)")
     _common(s, needs_suite=False)
     s.set_defaults(func=cmd_setup)
 
@@ -355,6 +453,22 @@ def main(argv: list[str]) -> int:
     r.add_argument("--reassign", default=None, help="integrator id to hand producers to")
     _common(r)
     r.set_defaults(func=cmd_remove)
+
+    d = sub.add_parser("adopt", help="bring an existing LIVE job under manifest/governance "
+                                     "without rewriting its prompt")
+    d.add_argument("--job-id", required=True, help="the live job's id (codex automation dir name)")
+    d.add_argument("--suite", required=True,
+                   help="an existing suite.toml path, or a project slug to resolve/create "
+                        "under <codex-home>/automations/suites/<slug>.toml")
+    d.add_argument("--phase", required=True,
+                   choices=["producer", "integrator", "janitor", "reflector"])
+    d.add_argument("--template", required=True,
+                   help="P1..P10, or 'custom' for a bespoke prompt (drift-tracked via prompt_hash)")
+    d.add_argument("--merge-authority", action="store_true",
+                   help="mark this job as the suite's sole merge authority")
+    d.add_argument("--scope", action="append", help="write_scope entry (repeatable)")
+    _common(d, needs_suite=False)
+    d.set_defaults(func=cmd_adopt)
 
     args = ap.parse_args(argv)
     return args.func(args)

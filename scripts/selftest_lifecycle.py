@@ -53,6 +53,46 @@ def run_lc(argv: list[str]) -> tuple[int, str]:
     return rc, buf.getvalue()
 
 
+def _job_toml(job: dict) -> str:
+    """Render one [[job]] table from a flat dict of scalars/lists (test-only,
+    compact TOML writer — enough for the minimal manifests these checks need)."""
+    lines = ["[[job]]"]
+    for k, v in job.items():
+        if isinstance(v, bool):
+            lines.append(f"{k} = {'true' if v else 'false'}")
+        elif isinstance(v, (int, float)):
+            lines.append(f"{k} = {v}")
+        elif isinstance(v, list):
+            items = ", ".join(f'"{x}"' for x in v)
+            lines.append(f"{k} = [{items}]")
+        else:
+            lines.append(f'{k} = "{v}"')
+    return "\n".join(lines)
+
+
+def write_manifest(path: Path, project: str, workspace: str, jobs: list[dict],
+                    night_start_hour: int | None = None) -> None:
+    """Write a compact-but-valid suite manifest: [suite] + one or more [[job]]."""
+    header = [f'[suite]\nproject = "{project}"\nworkspace = "{workspace}"']
+    if night_start_hour is not None:
+        header.append(f"night_start_hour = {night_start_hour}")
+    body = "\n\n".join([header[0] + ("\n" + header[1] if len(header) > 1 else "")]
+                        + [_job_toml(j) for j in jobs])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body + "\n", encoding="utf-8")
+
+
+def _integrator_job(jid: str, hour: int) -> dict:
+    return {"id": jid, "template": "P3", "phase": "integrator", "merge_authority": True,
+            "schedule": f"0 {hour} * * *", "write_scope": ["**"], "mode": "active"}
+
+
+def _producer_job(jid: str, hour: int, hands_off_to: str) -> dict:
+    return {"id": jid, "template": "P1", "phase": "producer", "merge_authority": False,
+            "schedule": f"0 {hour} * * *", "write_scope": ["**"], "mode": "active",
+            "hands_off_to": hands_off_to}
+
+
 def make_workspace(root: Path) -> Path:
     ws = root / "demo-app"
     ws.mkdir()
@@ -231,6 +271,254 @@ def main() -> int:
         check("second scaffold call returns None (already exists)", second is None)
         check("sentinel survives a second scaffold call",
               sentinel in queue_path.read_text(encoding="utf-8"))
+
+        # --- E1: multi-suite fleet validation -------------------------------
+        multi_home = root / ".codex-multi"
+        suites_root = OPT.suites_dir(multi_home)
+
+        # 1. two suites whose integrators share the SAME workspace -> FAIL,
+        #    naming both integrator job ids.
+        shared_ws = str(root / "shared-repo")
+        write_manifest(suites_root / "alpha.toml", "Alpha", shared_ws,
+                        [_integrator_job("alpha-integrator", 3),
+                         _producer_job("alpha-producer", 1, "alpha-integrator")])
+        write_manifest(suites_root / "beta.toml", "Beta", shared_ws,
+                        [_integrator_job("beta-integrator", 4),
+                         _producer_job("beta-producer", 1, "beta-integrator")])
+        rc_shared = OPT.fleet_multi(multi_home, require_approved=False)
+        check("multi-suite: shared-workspace merge authorities FAIL", rc_shared != 0)
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            OPT.fleet_multi(multi_home, require_approved=False)
+        shared_out = buf.getvalue()
+        check("multi-suite: shared-workspace failure names both integrators",
+              "alpha-integrator" in shared_out and "beta-integrator" in shared_out,
+              shared_out)
+
+        # 2. same two suites but with DISTINCT workspaces -> PASS.
+        write_manifest(suites_root / "beta.toml", "Beta", str(root / "beta-repo"),
+                        [_integrator_job("beta-integrator", 4),
+                         _producer_job("beta-producer", 1, "beta-integrator")])
+        rc_distinct = OPT.fleet_multi(multi_home, require_approved=False)
+        check("multi-suite: distinct-workspace suites PASS", rc_distinct == 0)
+
+        # 3. legacy <home>/automations/suite.toml alone is still honored, with
+        #    a deprecation note printed.
+        legacy_home = root / ".codex-legacy"
+        legacy_path = legacy_home / "automations" / OPT.LEGACY_SUITE_NAME
+        write_manifest(legacy_path, "Legacy", str(root / "legacy-repo"),
+                        [_integrator_job("legacy-integrator", 3),
+                         _producer_job("legacy-producer", 1, "legacy-integrator")])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc_legacy = OPT.fleet_multi(legacy_home, require_approved=False)
+        legacy_out = buf.getvalue()
+        check("multi-suite: legacy suite.toml alone validates and PASSes",
+              rc_legacy == 0, legacy_out)
+        check("multi-suite: legacy file gets a deprecation note",
+              "legacy" in legacy_out.lower() and "deprecat" in legacy_out.lower(),
+              legacy_out)
+
+        # 4. E5: night_start_hour normalization for rule 5 (phase ordering).
+        #    producer@23, integrator@03 — FAILS with default night_start_hour=0,
+        #    PASSES once night_start_hour=20 rolls both into the same night.
+        night_home = root / ".codex-night"
+        night_ws = str(root / "night-repo")
+        night_suite = OPT.suites_dir(night_home) / "gamma.toml"
+
+        write_manifest(night_suite, "Gamma", night_ws,
+                        [_integrator_job("gamma-integrator", 3),
+                         _producer_job("gamma-producer", 23, "gamma-integrator")])
+        rc_default = OPT.fleet(night_suite, require_approved=False)
+        check("night_start_hour default(0): midnight-spanning pair FAILS rule 5",
+              rc_default != 0)
+
+        write_manifest(night_suite, "Gamma", night_ws,
+                        [_integrator_job("gamma-integrator", 3),
+                         _producer_job("gamma-producer", 23, "gamma-integrator")],
+                        night_start_hour=20)
+        rc_normalized = OPT.fleet(night_suite, require_approved=False)
+        check("night_start_hour=20: midnight-spanning pair PASSES rule 5",
+              rc_normalized == 0)
+
+        # --- E4: agent recording + per-verb resolution ---------------------
+        agent_home = root / ".codex-agents"
+        claude_agent_home = root / ".claude-agents"
+        agent_ws = root / "agent-app"
+        agent_ws.mkdir()
+        (agent_ws / "package.json").write_text('{"name":"agent-app"}', encoding="utf-8")
+        (agent_ws / "package-lock.json").write_text("{}", encoding="utf-8")
+        (agent_ws / "tests").mkdir()
+        (agent_ws / "tests" / "t.test.js").write_text("test('x',()=>{})", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=agent_ws)
+        subprocess.run(["git", "checkout", "-q", "-b", "main"], cwd=agent_ws)
+
+        agent_suite_path = root / "agent-suite.toml"
+        rc, out = run_lc(["setup", str(agent_ws), "--suite", str(agent_suite_path),
+                          "--agent", "claude", "--apply",
+                          "--home-override", str(claude_agent_home)])
+        check("E4 setup --agent claude exits 0", rc == 0, out)
+        _, agent_jobs = LC.load_suite(agent_suite_path)
+        coverage_job = LC.find_job(agent_jobs, "agent-app-coverage-ratchet")
+        check("E4 setup recorded agents=['claude'] on the job",
+              coverage_job is not None and coverage_job.get("agents") == ["claude"],
+              coverage_job)
+
+        rc, out = run_lc(["update", "--suite", str(agent_suite_path),
+                          "--id", "agent-app-coverage-ratchet",
+                          "--param", "coverage_floor=90", "--apply",
+                          "--home-override", str(agent_home)])
+        check("E4 update with NO --agent exits 0", rc == 0, out)
+        claude_skill = (claude_agent_home / "scheduled-tasks"
+                        / "agent-app-coverage-ratchet" / "SKILL.md")
+        check("E4 update (no --agent) touched the claude registry path",
+              claude_skill.is_file(), claude_skill)
+        codex_toml = (agent_home / "automations"
+                      / "agent-app-coverage-ratchet" / "automation.toml")
+        check("E4 update (no --agent) did NOT touch codex", not codex_toml.exists(),
+              codex_toml)
+
+        # --- E4: fingerprint stability across recording job["agents"] -------
+        fp_job = {"id": "fp-check", "template": "P1", "phase": "producer",
+                  "merge_authority": False, "schedule": "0 1 * * *",
+                  "write_scope": ["**"], "mode": "active", "params": {"x": 1}}
+        fp_before = LC.PP.compute_fingerprint(fp_job)
+        fp_job["agents"] = ["claude"]
+        fp_after = LC.PP.compute_fingerprint(fp_job)
+        check("E4 fingerprint identical before/after recording job['agents']",
+              fp_before == fp_after, (fp_before, fp_after))
+
+        # --- E3: adopt a live codex job under manifest governance -----------
+        # Adopt a janitor into a suite that already has an integrator (rule 4
+        # requires an integrator whenever a janitor is present), so this
+        # exercises the adopt path itself rather than an unrelated fleet rule.
+        adopt_home = root / ".codex-adopt"
+        adopted_dir = adopt_home / "automations" / "adopted-job"
+        adopted_dir.mkdir(parents=True)
+        adopted_ws = root / "adopted-ws"
+        adopted_ws.mkdir()
+        adopt_suites = OPT.suites_dir(adopt_home)
+        write_manifest(adopt_suites / "adopted-project.toml", "adopted-project",
+                       str(adopted_ws), [_integrator_job("adopted-project-integrator", 3)])
+        live_prompt = "Do the thing. Task-specific instructions only."
+        (adopted_dir / "automation.toml").write_text(
+            "version = 1\n"
+            'id = "adopted-job"\n'
+            'kind = "cron"\n'
+            'name = "Adopted Job"\n'
+            "prompt = '''\n" + live_prompt + "\n'''\n"
+            'status = "ACTIVE"\n'
+            'rrule = "FREQ=DAILY;BYHOUR=4;BYMINUTE=30;BYSECOND=0"\n'
+            f'cwds = ["{adopted_ws}"]\n',
+            encoding="utf-8",
+        )
+        rc, out = run_lc(["adopt", "--job-id", "adopted-job", "--template", "P4",
+                          "--phase", "janitor", "--suite", "adopted-project",
+                          "--home-override", str(adopt_home), "--apply"])
+        check("E3 adopt --apply exits 0", rc == 0, out)
+        adopted_suite_path = OPT.suite_manifest_path(adopt_home, "adopted-project")
+        check("E3 adopt wrote the resolved suites/ manifest", adopted_suite_path.is_file(),
+              adopted_suite_path)
+        if adopted_suite_path.is_file():
+            _, adopted_jobs = LC.load_suite(adopted_suite_path)
+            adopted_job = LC.find_job(adopted_jobs, "adopted-job")
+            check("E3 adopt drafted a manifest entry", adopted_job is not None)
+            check("E3 adopt recovered the schedule from the rrule",
+                  adopted_job is not None and adopted_job.get("schedule") == "30 4 * * *",
+                  adopted_job)
+            check("E3 adopt set template_version for a known template",
+                  adopted_job is not None and adopted_job.get("template_version") is not None,
+                  adopted_job)
+        live_after = (adopted_dir / "automation.toml").read_text(encoding="utf-8")
+        check("E3 adopt never modified the LIVE prompt",
+              live_prompt in live_after, live_after)
+
+        # --- E3: adopt a bespoke job with --template custom ------------------
+        # A reflector needs no integrator, so this isolates the custom path;
+        # custom jobs track a prompt_hash instead of a template_version and must
+        # pass fleet validation (template `custom` is adoptable).
+        rc_c, out_c = run_lc(["adopt", "--job-id", "adopted-job", "--template",
+                              "custom", "--phase", "reflector", "--suite",
+                              "custom-project", "--home-override", str(adopt_home),
+                              "--apply"])
+        check("E3 adopt --template custom exits 0 (passes fleet validation)",
+              rc_c == 0, out_c)
+        custom_suite_path = OPT.suite_manifest_path(adopt_home, "custom-project")
+        if custom_suite_path.is_file():
+            _, custom_jobs = LC.load_suite(custom_suite_path)
+            cj = LC.find_job(custom_jobs, "adopted-job")
+            check("E3 custom adopt records a prompt_hash, not a template_version",
+                  cj is not None and cj.get("prompt_hash")
+                  and not cj.get("template_version"), cj)
+
+        # --- E3: dual merge-authority guard on adopt -------------------------
+        dual_home = root / ".codex-dual"
+        dual_suites = OPT.suites_dir(dual_home)
+        dual_ws = str(root / "dual-repo")
+        write_manifest(dual_suites / "dual.toml", "Dual", dual_ws,
+                        [_integrator_job("dual-integrator", 3)])
+        dual_dir = dual_home / "automations" / "second-integrator"
+        dual_dir.mkdir(parents=True)
+        (dual_dir / "automation.toml").write_text(
+            "version = 1\n"
+            'id = "second-integrator"\n'
+            'kind = "cron"\n'
+            'name = "Second Integrator"\n'
+            "prompt = '''\nIntegrate things.\n'''\n"
+            'status = "ACTIVE"\n'
+            'rrule = "FREQ=DAILY;BYHOUR=3;BYMINUTE=0;BYSECOND=0"\n'
+            f'cwds = ["{dual_ws}"]\n',
+            encoding="utf-8",
+        )
+        rc, out = run_lc(["adopt", "--job-id", "second-integrator", "--template", "P3",
+                          "--phase", "integrator", "--merge-authority",
+                          "--suite", str(dual_suites / "dual.toml"),
+                          "--home-override", str(dual_home), "--apply"])
+        check("E3 adopt: second active merge authority for same workspace FAILS",
+              rc == 1, out)
+        _, dual_jobs_after = LC.load_suite(dual_suites / "dual.toml")
+        check("E3 adopt: nothing written on dual-authority failure",
+              LC.find_job(dual_jobs_after, "second-integrator") is None)
+
+        # --- E6: setup output location ---------------------------------------
+        e6_home = root / ".codex-e6"
+        e6_ws = root / "e6-app"
+        e6_ws.mkdir()
+        (e6_ws / "package.json").write_text('{"name":"e6-app"}', encoding="utf-8")
+        (e6_ws / "package-lock.json").write_text("{}", encoding="utf-8")
+        (e6_ws / "tests").mkdir()
+        (e6_ws / "tests" / "t.test.js").write_text("test('x',()=>{})", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=e6_ws)
+        subprocess.run(["git", "checkout", "-q", "-b", "main"], cwd=e6_ws)
+
+        rc, out = run_lc(["setup", str(e6_ws), "--agent", "codex", "--apply",
+                          "--home-override", str(e6_home)])
+        check("E6 setup with neither --suite nor --local exits 0", rc == 0, out)
+        expected_default = OPT.suite_manifest_path(e6_home, "e6-app")
+        check("E6 setup default resolves under automations/suites/<slug>.toml",
+              expected_default.is_file()
+              and str(expected_default).replace("\\", "/").endswith(
+                  "automations/suites/e6-app.toml"),
+              expected_default)
+
+        rc, out = run_lc(["setup", str(e6_ws), "--local", "--agent", "codex", "--apply",
+                          "--home-override", str(e6_home)])
+        check("E6 setup --local exits 0", rc == 0, out)
+        local_path = e6_ws / ".codex" / "automations" / "suite.toml"
+        check("E6 setup --local writes <root>/.codex/automations/suite.toml",
+              local_path.is_file(), local_path)
+
+        # --- rrule_to_cron round-trips cron_to_rrule --------------------------
+        daily_cron = "15 4 * * *"
+        check("rrule_to_cron round-trips a daily cron",
+              LC.MAT.rrule_to_cron(LC.MAT.cron_to_rrule(daily_cron)) == daily_cron,
+              LC.MAT.cron_to_rrule(daily_cron))
+
+        weekly_cron = "30 2 * * 1,3"
+        check("rrule_to_cron round-trips a weekly cron",
+              LC.MAT.rrule_to_cron(LC.MAT.cron_to_rrule(weekly_cron)) == weekly_cron,
+              LC.MAT.cron_to_rrule(weekly_cron))
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0

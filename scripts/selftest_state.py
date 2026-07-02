@@ -27,6 +27,7 @@ FINGERPRINT = HERE / "fingerprint.py"
 RUN_LEDGER = HERE / "run_ledger.py"
 STATE_SCHEMA_PATH = HERE / "state_schema.py"
 FLEET_HEALTH_PATH = HERE / "fleet_health.py"
+FLEET_REPORT_PATH = HERE / "fleet_report.py"
 
 _spec = importlib.util.spec_from_file_location("state_schema", STATE_SCHEMA_PATH)
 STATE_SCHEMA = importlib.util.module_from_spec(_spec)
@@ -35,6 +36,10 @@ _spec.loader.exec_module(STATE_SCHEMA)
 _fh_spec = importlib.util.spec_from_file_location("fleet_health", FLEET_HEALTH_PATH)
 FLEET_HEALTH = importlib.util.module_from_spec(_fh_spec)
 _fh_spec.loader.exec_module(FLEET_HEALTH)
+
+_fr_spec = importlib.util.spec_from_file_location("fleet_report", FLEET_REPORT_PATH)
+FLEET_REPORT = importlib.util.module_from_spec(_fr_spec)
+_fr_spec.loader.exec_module(FLEET_REPORT)
 
 PASSED = 0
 FAILED = 0
@@ -742,6 +747,142 @@ def test_fleet_health_clean_exit_zero(root: Path) -> None:
     check("exit code is 0 (fleet clean)", rc == 0, str(data))
     check("no jobs flagged", data["summary"].get("jobs_flagged") == 0, str(data))
     check("summary.healthy is True", data["summary"].get("healthy") is True, str(data["summary"]))
+
+
+# --- fleet_report.py fixtures --------------------------------------------------
+FR_NOW = "2026-07-01T00:00:00+00:00"
+_FR_NOW_DT = datetime.fromisoformat(FR_NOW)
+
+
+def _fr_run_entry(runs_dir: Path, *, when: datetime, outcome: str = "success",
+                   units_completed: int = 1, failure_class: str = "none",
+                   runtime_s: int | None = None, merged_shas: list[str] | None = None,
+                   suffix: str = "") -> None:
+    """Write one `runs/<ts>.md` fixture via state_schema.render_frontmatter,
+    with a `when` positioned relative to FR_NOW. `suffix` disambiguates
+    same-timestamp entries so no two fixtures collide on disk."""
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    record = STATE_SCHEMA.blank_record()
+    record["when"] = when.isoformat()
+    record["outcome"] = outcome
+    record["units_completed"] = units_completed
+    record["failure_class"] = failure_class
+    if runtime_s is not None:
+        record["runtime_s"] = runtime_s
+    if merged_shas:
+        record["merged_shas"] = merged_shas
+    fname = when.strftime("%Y%m%dT%H%M%SZ") + suffix + ".md"
+    (runs_dir / fname).write_text(STATE_SCHEMA.render_frontmatter(record), encoding="utf-8")
+
+
+def run_fleet_report_json(home: Path, now: str = FR_NOW) -> tuple[int, dict]:
+    """Invoke fleet_report.main(["--home", <home>, "--json", "--now", now])
+    with stdout captured, returning (exit_code, parsed_json)."""
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = FLEET_REPORT.main(["--home", str(home), "--json", "--now", now])
+    return rc, json.loads(buf.getvalue())
+
+
+@register("fleet_report: exact rollups for a crafted job (3 runs in last 7d, "
+          "units 2/3/0, merges counted from merged_shas)")
+def test_fleet_report_exact_rollups(root: Path) -> None:
+    home = root / "fr-rollups"
+    job = home / ".codex" / "automations" / "job-rollup"
+    runs = job / "runs"
+
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), units_completed=2,
+                  merged_shas=["a1"], suffix="-a")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=2), units_completed=3,
+                  merged_shas=["b2", "c3"], suffix="-b")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=3), units_completed=0,
+                  suffix="-c")
+
+    rc, data = run_fleet_report_json(home)
+    check("fleet_report exit 0", rc == 0, str(data))
+    jobs_by_id = {j["id"]: j for j in data["jobs"]}
+    job_data = jobs_by_id.get("job-rollup")
+    check("job-rollup present", job_data is not None, str(jobs_by_id))
+    check("runs_7d == 3", job_data is not None and job_data["runs_7d"] == 3, str(job_data))
+    check("units_30d == 5 (2+3+0)", job_data is not None and job_data["units_30d"] == 5, str(job_data))
+    check("merges_30d == 3 (a1,b2,c3)", job_data is not None and job_data["merges_30d"] == 3, str(job_data))
+
+
+@register("fleet_report: zero-units-3x fires when the 3 most recent runs are all "
+          "units_completed==0, and does not fire when one is >0")
+def test_fleet_report_zero_units_3x(root: Path) -> None:
+    home = root / "fr-zero-units"
+
+    fires_job = home / ".codex" / "automations" / "job-zero-fires"
+    runs_fires = fires_job / "runs"
+    _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=1), units_completed=0, suffix="-a")
+    _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=2), units_completed=0, suffix="-b")
+    _fr_run_entry(runs_fires, when=_FR_NOW_DT - timedelta(days=3), units_completed=0, suffix="-c")
+
+    no_fire_job = home / ".codex" / "automations" / "job-zero-no-fire"
+    runs_no_fire = no_fire_job / "runs"
+    _fr_run_entry(runs_no_fire, when=_FR_NOW_DT - timedelta(days=1), units_completed=0, suffix="-a")
+    _fr_run_entry(runs_no_fire, when=_FR_NOW_DT - timedelta(days=2), units_completed=1, suffix="-b")
+    _fr_run_entry(runs_no_fire, when=_FR_NOW_DT - timedelta(days=3), units_completed=0, suffix="-c")
+
+    rc, data = run_fleet_report_json(home)
+    jobs_by_id = {j["id"]: j for j in data["jobs"]}
+
+    check("job-zero-fires has zero-units-3x flag",
+          "zero-units-3x" in jobs_by_id.get("job-zero-fires", {}).get("flags", []),
+          str(jobs_by_id))
+    check("job-zero-no-fire does NOT have zero-units-3x flag",
+          "zero-units-3x" not in jobs_by_id.get("job-zero-no-fire", {}).get("flags", []),
+          str(jobs_by_id))
+
+
+@register("fleet_report: blocked_ratio_7d computed correctly for a known mix "
+          "(2 blocked of 4 -> 0.5)")
+def test_fleet_report_blocked_ratio(root: Path) -> None:
+    home = root / "fr-blocked-ratio"
+    job = home / ".codex" / "automations" / "job-blocked-mix"
+    runs = job / "runs"
+
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), outcome="success",
+                  failure_class="none", suffix="-a")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=2), outcome="success",
+                  failure_class="none", suffix="-b")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=3), outcome="blocked",
+                  failure_class="blocked-by-dirty-worktree", suffix="-c")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=4), outcome="failed",
+                  failure_class="timeout", suffix="-d")
+
+    rc, data = run_fleet_report_json(home)
+    jobs_by_id = {j["id"]: j for j in data["jobs"]}
+    job_data = jobs_by_id.get("job-blocked-mix")
+    check("job-blocked-mix present", job_data is not None, str(jobs_by_id))
+    check("blocked_ratio_7d == 0.5 (2 blocked of 4)",
+          job_data is not None and job_data["blocked_ratio_7d"] == 0.5, str(job_data))
+
+
+@register("fleet_report: a clean job (all success, non-zero units) has an empty flags list")
+def test_fleet_report_clean_job_no_flags(root: Path) -> None:
+    home = root / "fr-clean"
+    job = home / ".codex" / "automations" / "job-clean"
+    runs = job / "runs"
+
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=1), outcome="success",
+                  units_completed=2, failure_class="none", runtime_s=100, suffix="-a")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=2), outcome="success",
+                  units_completed=3, failure_class="none", runtime_s=110, suffix="-b")
+    _fr_run_entry(runs, when=_FR_NOW_DT - timedelta(days=8), outcome="success",
+                  units_completed=1, failure_class="none", runtime_s=100, suffix="-c")
+
+    rc, data = run_fleet_report_json(home)
+    check("fleet_report exit 0", rc == 0, str(data))
+    jobs_by_id = {j["id"]: j for j in data["jobs"]}
+    job_data = jobs_by_id.get("job-clean")
+    check("job-clean present", job_data is not None, str(jobs_by_id))
+    check("job-clean has empty flags list",
+          job_data is not None and job_data["flags"] == [], str(job_data))
 
 
 def main() -> int:

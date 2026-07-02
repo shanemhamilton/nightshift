@@ -287,8 +287,31 @@ def _fmt_item(it: dict, today: _dt.date) -> str:
     return "\n".join(lines)
 
 
+def _fleet_summary_line(codex_home: str | None) -> str | None:
+    """Best-effort first summary line of <codex-home>/FLEET-REPORT.md (written
+    by fleet_report.py), for the digest header context. Missing/unreadable
+    file -> None; NEVER raises. Does not import fleet_report — reads the file
+    text only, matching this module's existing best-effort-hook style (see
+    objectives_line)."""
+    try:
+        home = Path(codex_home).expanduser() if codex_home \
+            else Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+        report_path = home / "FLEET-REPORT.md"
+        if not report_path.is_file():
+            return None
+        text = report_path.read_text(encoding="utf-8", errors="replace")
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                return line
+        return None
+    except OSError:
+        return None
+
+
 def build_digest(items: list[dict], malformed: list[tuple[str, str]],
-                 today: _dt.date, resolved: int = 0) -> str:
+                 today: _dt.date, resolved: int = 0,
+                 fleet_summary: str | None = None) -> str:
     # Structurally-incomplete items (missing first_seen/risk/action) join the
     # truly-unparseable ones under "Needs cleanup" rather than being digested
     # with unreliable data.
@@ -320,8 +343,10 @@ def build_digest(items: list[dict], malformed: list[tuple[str, str]],
     out = [f"# Daily approvals — {today.isoformat()}",
            f"Read-only digest of pending human decisions. "
            f"{len(items)} item(s) across {len(projects)} project(s): "
-           f"{len(judgment)} need judgment, {len(safe)} safe to batch-approve.{note}",
-           ""]
+           f"{len(judgment)} need judgment, {len(safe)} safe to batch-approve.{note}"]
+    if fleet_summary:
+        out.append(f"Fleet: {fleet_summary}")
+    out.append("")
     out.append(f"## Needs judgment ({len(judgment)})")
     out += [_fmt_item(i, today) + "\n" for i in judgment] or ["_none_\n"]
     out.append(f"## Safe to batch-approve ({len(safe)})")
@@ -745,7 +770,8 @@ def main(argv: list[str]) -> int:
                           "malformed": malformed}, indent=2))
         return 0
 
-    digest = build_digest(items, malformed, today, resolved)
+    fleet_summary = _fleet_summary_line(args.codex_home)
+    digest = build_digest(items, malformed, today, resolved, fleet_summary)
     print(digest)
 
     judgment = sum(1 for i in items if classify(i) == "judgment")

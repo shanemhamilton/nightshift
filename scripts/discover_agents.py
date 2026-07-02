@@ -54,25 +54,41 @@ def detect_block(text: str, cfg: dict) -> tuple[bool, int | None]:
     return (True, int(m.group(1)) if m else 0)
 
 
-def suite_index(root: Path) -> dict:
-    """Read <root>/suite.toml if present → {job_id: {project, workspace}}.
-
-    The scaffolder copies the manifest next to the jobs, so this lets discovery
-    label each job with the project/workspace it belongs to — the quickest way to
-    spot a generic or stale job that drifted in from another suite.
-    """
-    if tomllib is None:
-        return {}
-    sp = root / "suite.toml"
-    if not sp.is_file():
-        return {}
+def _read_manifest_jobs(path: Path) -> dict:
+    """Parse one manifest → {job_id: {project, workspace}}. Tolerant: never
+    raises, returns {} on any parse problem."""
     try:
-        data = tomllib.loads(sp.read_text(encoding="utf-8", errors="replace"))
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return {}
     suite = data.get("suite", {})
     meta = {"project": suite.get("project"), "workspace": suite.get("workspace")}
     return {j.get("id"): meta for j in data.get("job", []) if j.get("id")}
+
+
+def suite_index(root: Path) -> dict:
+    """Merge every <root>/suites/*.toml manifest, plus the legacy
+    <root>/suite.toml if present, into one {job_id: {project, workspace}} map.
+
+    The scaffolder copies each project's manifest under suites/<slug>.toml, so
+    this lets discovery label each job with the project/workspace it belongs
+    to — the quickest way to spot a generic or stale job that drifted in from
+    another suite. Suite-dir entries are read first and legacy entries are
+    merged in without overwriting them, so on an id clash the suites/ entry
+    wins. Never raises.
+    """
+    if tomllib is None:
+        return {}
+    index: dict = {}
+    suites_root = root / "suites"
+    if suites_root.is_dir():
+        for sp in sorted(suites_root.glob("*.toml")):
+            index.update(_read_manifest_jobs(sp))
+    legacy = root / "suite.toml"
+    if legacy.is_file():
+        for jid, meta in _read_manifest_jobs(legacy).items():
+            index.setdefault(jid, meta)
+    return index
 
 
 def codex_meta(job_file: Path) -> dict:

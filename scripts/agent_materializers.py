@@ -69,6 +69,37 @@ def cron_to_rrule(schedule: str) -> str:
     return f"FREQ=DAILY;BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
 
 
+_RRULE_DAY_TO_DOW = {"SU": "0", "MO": "1", "TU": "2", "WE": "3",
+                     "TH": "4", "FR": "5", "SA": "6"}
+_RRULE_PART_RE = re.compile(r"([A-Z]+)=([^;]*)")
+_FALLBACK_CRON = "0 3 * * *"
+
+
+def rrule_to_cron(rrule: str) -> str:
+    """Convert a simple iCalendar RRULE string to a 5-field cron (m h dom mon dow).
+    Inverse of cron_to_rrule for the cases it emits. Never raises — unparseable
+    or unknown-FREQ input falls back to the same default cron_to_rrule uses."""
+    if not isinstance(rrule, str) or not rrule:
+        return _FALLBACK_CRON
+    parts = dict(_RRULE_PART_RE.findall(rrule))
+    freq = parts.get("FREQ", "")
+    hour = parts.get("BYHOUR", "3")
+    minute = parts.get("BYMINUTE", "0")
+    hour = hour if hour.isdigit() else "3"
+    minute = minute if minute.isdigit() else "0"
+
+    if freq == "DAILY":
+        return f"{minute} {hour} * * *"
+    if freq == "WEEKLY":
+        byday = parts.get("BYDAY", "")
+        days = [d for d in byday.split(",") if d in _RRULE_DAY_TO_DOW]
+        if not days:
+            return _FALLBACK_CRON
+        dow = ",".join(sorted(_RRULE_DAY_TO_DOW[d] for d in days))
+        return f"{minute} {hour} * * {dow}"
+    return _FALLBACK_CRON
+
+
 _HAIKU_RE = re.compile(r"haiku", re.IGNORECASE)
 
 

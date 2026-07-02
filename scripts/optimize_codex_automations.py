@@ -36,6 +36,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import naming  # noqa: E402 — project-slug helper, single source (see naming.py)
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover
@@ -280,6 +283,10 @@ INACTIVE_STATUSES = {"disabled", "archived", "paused", "inactive", "off"}
 
 # --- Fleet / suite constants -------------------------------------------------
 KNOWN_TEMPLATES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"}
+# `custom` is a valid template ONLY for jobs adopted under governance
+# (lifecycle.py adopt): the prompt is externally authored, so the manifest tracks
+# a prompt_hash instead of a template_version. It is not composable via `add`.
+ADOPTABLE_TEMPLATES = KNOWN_TEMPLATES | {"custom"}
 PHASE_RANK = {"producer": 0, "integrator": 1, "janitor": 2, "reflector": 3}
 FINGERPRINT_FIELDS = (
     "template", "template_version", "merge_authority",
@@ -750,13 +757,42 @@ def strict(paths: list[Path], key: str) -> int:
     return 1
 
 
+# --- Multi-suite support ------------------------------------------------------
+# Suites now live one-manifest-per-project at <home>/automations/suites/<slug>.toml.
+# The legacy single-file layout (<home>/automations/suite.toml) is still read, with
+# a printed deprecation note, so existing single-suite installs keep working.
+LEGACY_SUITE_NAME = "suite.toml"
+
+
+def suites_dir(home: Path) -> Path:
+    return home / "automations" / "suites"
+
+
+def iter_suite_manifests(home: Path) -> list[Path]:
+    """Every suites/*.toml (sorted) PLUS the legacy automations/suite.toml, if it
+    exists, appended last. Deterministic order; legacy always sorts after the
+    per-project manifests so it reads as the fallback it is."""
+    manifests = sorted(suites_dir(home).glob("*.toml")) if suites_dir(home).is_dir() else []
+    legacy = home / "automations" / LEGACY_SUITE_NAME
+    if legacy.is_file():
+        manifests.append(legacy)
+    return manifests
+
+
+def suite_manifest_path(home: Path, project: str) -> Path:
+    """Where a project's manifest should be written: suites/<slug>.toml."""
+    return suites_dir(home) / f"{naming.slugify(project)}.toml"
+
+
 # --- Fleet validation --------------------------------------------------------
 def find_suite(home: Path, override: str | None) -> Path | None:
+    """Resolve a single manifest: the override if given, else the first manifest
+    from iter_suite_manifests (used by the single-manifest --fleet PATH path)."""
     if override:
         p = Path(override).expanduser()
         return p if p.is_file() else None
-    candidate = home / "automations" / "suite.toml"
-    return candidate if candidate.is_file() else None
+    manifests = iter_suite_manifests(home)
+    return manifests[0] if manifests else None
 
 
 def compute_fingerprint(job: dict) -> str:
@@ -784,26 +820,40 @@ def _cron_hour(schedule: str | None) -> int | None:
         return None
 
 
-def fleet(suite_path: Path | None, require_approved: bool) -> int:
-    if suite_path is None:
-        print("No suite.toml found. Pass --fleet PATH or create "
-              "${CODEX_HOME}/automations/suite.toml.")
-        return 1
+def _cron_minute(schedule: str | None) -> int | None:
+    if not isinstance(schedule, str):
+        return None
+    parts = schedule.split()
+    if len(parts) != 5:
+        return None
+    try:
+        return int(parts[0])  # standard 5-field cron: m h dom mon dow
+    except ValueError:
+        return None
+
+
+def _night_norm(hour: int, night_start_hour: int) -> int:
+    """Roll a cron hour into a night window starting at night_start_hour, so a
+    late-evening producer (e.g. h23) correctly sorts before an early-morning
+    integrator (e.g. h3) when the suite's night starts at, say, 20:00."""
+    return (hour - night_start_hour) % 24
+
+
+def _load_manifest(suite_path: Path) -> tuple[dict | None, list[dict], str, str | None]:
+    """Parse a manifest and return (data, jobs, project, parse_error)."""
     raw = suite_path.read_text(encoding="utf-8")
     try:
         data = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as e:
-        print(f"FAIL — manifest TOML parse error: {e}")
-        return 1
-
+        return (None, [], "<unnamed>", f"manifest TOML parse error: {e}")
     jobs = data.get("job", [])
     project = data.get("suite", {}).get("project", "<unnamed>")
-    print(f"Fleet validation — suite '{project}' ({len(jobs)} jobs), "
-          f"protocol v{PROTOCOL_VERSION}\n")
-    if not jobs:
-        print("FAIL — manifest declares no [[job]] entries.")
-        return 1
+    return (data, jobs, project, None)
 
+
+def _validate_suite_jobs(jobs: list[dict], night_start_hour: int) -> list[str]:
+    """Rules 1-7 (structural validation) for a single suite's job list. Pure —
+    returns the list of error strings; does not print or touch approval state."""
     errors: list[str] = []
     by_id = {}
 
@@ -817,11 +867,11 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
         else:
             by_id[jid] = j
 
-    # Rule 6: known templates
+    # Rule 6: known templates (P1..P10, or `custom` for adopted bespoke jobs)
     for j in jobs:
-        if j.get("template") not in KNOWN_TEMPLATES:
+        if j.get("template") not in ADOPTABLE_TEMPLATES:
             errors.append(f"{j.get('id')}: unknown template "
-                          f"{j.get('template')!r} (expected P1..P10)")
+                          f"{j.get('template')!r} (expected P1..P10 or custom)")
 
     # Rule 1 + 2: at most one merge authority; exactly one when any producer or
     # janitor exists; the authority (if any) must be the integrator; and every
@@ -864,22 +914,29 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
     if "janitor" in phases and not integrators:
         errors.append("janitor present but no integrator it can depend on")
 
-    # Rule 5: phase ordering by cron hour
+    # Rule 5: phase ordering by cron hour, normalized into the suite's night
+    # window (default night_start_hour=0, i.e. no normalization) so a
+    # midnight-spanning schedule (producer at 23:00, integrator at 03:00) is
+    # compared in rolling-night order rather than raw clock order.
     ranked = [(PHASE_RANK.get(j.get("phase"), 99), _cron_hour(j.get("schedule")),
                j.get("id")) for j in jobs]
-    timed = [(r, h, i) for (r, h, i) in ranked if h is not None]
+    timed = [(r, _night_norm(h, night_start_hour), i) for (r, h, i) in ranked if h is not None]
     for a in range(len(timed)):
         for b in range(len(timed)):
             ra, ha, ia = timed[a]
             rb, hb, ib = timed[b]
             if ra < rb and ha > hb:
                 errors.append(f"phase order: '{ia}' (earlier phase) is scheduled "
-                              f"at h{ha} after '{ib}' at h{hb}")
+                              f"at h{ha} after '{ib}' at h{hb} (night_start_hour={night_start_hour})")
     if len(timed) < len([j for j in jobs if j.get("schedule")]):
         print("note: some schedules were not standard 5-field cron; "
               "ordering partially checked.\n")
 
-    # Approval / fingerprint reporting
+    return errors
+
+
+def _print_approval_status(jobs: list[dict]) -> int:
+    """Print each job's approval/fingerprint state; return count pending/stale."""
     print("Approval status:")
     pending_or_stale = 0
     for j in jobs:
@@ -898,6 +955,30 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
         mode = j.get("mode", "active")
         print(f"  {jid:22} {j.get('phase','?'):11} mode={mode:7} {state}{auth}")
     print()
+    return pending_or_stale
+
+
+def fleet(suite_path: Path | None, require_approved: bool) -> int:
+    """Validate a SINGLE manifest (used by `--fleet PATH` with an explicit arg)."""
+    if suite_path is None:
+        print("No suite manifest found. Pass --fleet PATH, create "
+              f"{{codex-home}}/automations/suites/<project>.toml, or the legacy "
+              "${CODEX_HOME}/automations/suite.toml.")
+        return 1
+    data, jobs, project, parse_error = _load_manifest(suite_path)
+    if parse_error:
+        print(f"FAIL — {parse_error}")
+        return 1
+
+    print(f"Fleet validation — suite '{project}' ({len(jobs)} jobs), "
+          f"protocol v{PROTOCOL_VERSION}\n")
+    if not jobs:
+        print("FAIL — manifest declares no [[job]] entries.")
+        return 1
+
+    night_start_hour = data.get("suite", {}).get("night_start_hour", 0)
+    errors = _validate_suite_jobs(jobs, night_start_hour)
+    pending_or_stale = _print_approval_status(jobs)
 
     if errors:
         print(f"FAIL ({len(errors)} structural error(s)):")
@@ -913,6 +994,145 @@ def fleet(suite_path: Path | None, require_approved: bool) -> int:
     return 0
 
 
+def _workspace_of(data: dict) -> str | None:
+    ws = data.get("suite", {}).get("workspace")
+    if not isinstance(ws, str) or not ws:
+        return None
+    return str(Path(ws).expanduser())
+
+
+def _cross_suite_checks(suites: list[tuple[Path, dict, list[dict]]]) -> tuple[list[str], list[str]]:
+    """Cross-suite rules over the union of all manifests' jobs.
+
+    (a) FAIL — at most one active merge-authority job per workspace path across
+        ALL manifests. Two manifests each declaring an active (mode not in
+        {shadow, disabled}) merge_authority job whose [suite].workspace resolves
+        to the same path is a merge race waiting to happen.
+    (b) WARN — two jobs from different suites sharing a workspace AND the same
+        cron hour+minute (collision risk), not fatal on its own.
+
+    Returns (errors, warnings).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # (a) merge authority per workspace
+    authority_by_ws: dict[str, list[tuple[str, str]]] = {}
+    for path, data, jobs in suites:
+        ws = _workspace_of(data)
+        if not ws:
+            continue
+        for j in jobs:
+            if j.get("merge_authority") is not True:
+                continue
+            if j.get("mode") in ("shadow", "disabled"):
+                continue
+            authority_by_ws.setdefault(ws, []).append((j.get("id", "?"), str(path)))
+    for ws, holders in authority_by_ws.items():
+        if len(holders) > 1:
+            names = ", ".join(f"{jid} ({src})" for jid, src in holders)
+            errors.append(f"multiple active merge authorities target workspace "
+                          f"'{ws}': {names}")
+
+    # (b) same-workspace same-time collision warning
+    scheduled_by_ws: dict[str, list[tuple[str, str, int, int]]] = {}
+    for path, data, jobs in suites:
+        ws = _workspace_of(data)
+        if not ws:
+            continue
+        for j in jobs:
+            h = _cron_hour(j.get("schedule"))
+            m = _cron_minute(j.get("schedule"))
+            if h is None or m is None:
+                continue
+            scheduled_by_ws.setdefault(ws, []).append((j.get("id", "?"), str(path), h, m))
+    for ws, entries in scheduled_by_ws.items():
+        for a in range(len(entries)):
+            for b in range(a + 1, len(entries)):
+                jid_a, src_a, ha, ma = entries[a]
+                jid_b, src_b, hb, mb = entries[b]
+                if src_a == src_b:
+                    continue  # same-suite collisions are covered by rule 5, not this warning
+                if (ha, ma) == (hb, mb):
+                    warnings.append(
+                        f"same-time collision risk on workspace '{ws}': "
+                        f"'{jid_a}' ({src_a}) and '{jid_b}' ({src_b}) both scheduled "
+                        f"at {ha:02d}:{mb:02d}")
+
+    return errors, warnings
+
+
+def fleet_multi(home: Path, require_approved: bool) -> int:
+    """Validate EVERY manifest returned by iter_suite_manifests: a per-suite
+    section + PASS/FAIL each, the legacy-file deprecation note if applicable,
+    then cross-suite checks over the union of jobs. Overall exit is nonzero if
+    any per-suite validation failed OR any cross-suite (a) violation occurred;
+    warnings alone never fail the run."""
+    manifests = iter_suite_manifests(home)
+    if not manifests:
+        print("No suite manifests found. Create "
+              f"{suites_dir(home)}/<project>.toml (one per project), or the "
+              "legacy ${CODEX_HOME}/automations/suite.toml.")
+        return 1
+
+    legacy = home / "automations" / LEGACY_SUITE_NAME
+    any_failed = False
+    suites_for_cross: list[tuple[Path, dict, list[dict]]] = []
+
+    for path in manifests:
+        is_legacy = path == legacy
+        print(f"=== {path} {'(legacy — deprecated, migrate to suites/<project>.toml)' if is_legacy else ''} ===")
+        data, jobs, project, parse_error = _load_manifest(path)
+        if parse_error:
+            print(f"FAIL — {parse_error}\n")
+            any_failed = True
+            continue
+        print(f"Fleet validation — suite '{project}' ({len(jobs)} jobs), "
+              f"protocol v{PROTOCOL_VERSION}\n")
+        if not jobs:
+            print("FAIL — manifest declares no [[job]] entries.\n")
+            any_failed = True
+            continue
+
+        night_start_hour = data.get("suite", {}).get("night_start_hour", 0)
+        errors = _validate_suite_jobs(jobs, night_start_hour)
+        pending_or_stale = _print_approval_status(jobs)
+
+        if errors:
+            print(f"FAIL ({len(errors)} structural error(s)):")
+            for e in errors:
+                print(f"  - {e}")
+            any_failed = True
+        elif require_approved and pending_or_stale:
+            print(f"FAIL — --require-approved: {pending_or_stale} job(s) pending or stale.")
+            any_failed = True
+        else:
+            print("PASS — suite is internally consistent"
+                  + (" and all active jobs are approved & current." if require_approved
+                     else "; see approval status above."))
+        print()
+        suites_for_cross.append((path, data, jobs))
+
+    print("=== Cross-suite checks ===")
+    cross_errors, cross_warnings = _cross_suite_checks(suites_for_cross)
+    for w in cross_warnings:
+        print(f"  WARN: {w}")
+    if cross_errors:
+        print(f"FAIL ({len(cross_errors)} cross-suite error(s)):")
+        for e in cross_errors:
+            print(f"  - {e}")
+    elif not cross_warnings:
+        print("  no cross-suite issues found.")
+    print()
+
+    if any_failed or cross_errors:
+        print("FAIL — see per-suite and cross-suite results above.")
+        return 1
+    print(f"PASS — {len(manifests)} suite manifest(s) validated"
+          + (", warnings noted above." if cross_warnings else "."))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Optimize Codex automation.toml files.")
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
@@ -922,7 +1142,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--strict", action="store_true", help="validate per-job block + sidecars")
     ap.add_argument("--fleet", nargs="?", const=True, default=False,
                     metavar="SUITE_TOML",
-                    help="validate a suite manifest (default: <codex-home>/automations/suite.toml)")
+                    help="validate a suite manifest. With a PATH, validate that one "
+                         "manifest. With no PATH, validate every manifest under "
+                         "<codex-home>/automations/suites/*.toml (plus the legacy "
+                         "<codex-home>/automations/suite.toml if present) and run "
+                         "cross-suite checks.")
     ap.add_argument("--require-approved", action="store_true",
                     help="with --fleet: also fail if any active job is pending/stale")
     ap.add_argument("--codex-home", default=None, help="override $CODEX_HOME / ~/.codex")
@@ -932,8 +1156,9 @@ def main(argv: list[str]) -> int:
     home = codex_home(args.codex_home)
 
     if args.fleet is not False:
-        override = args.fleet if isinstance(args.fleet, str) else None
-        return fleet(find_suite(home, override), args.require_approved)
+        if isinstance(args.fleet, str):
+            return fleet(find_suite(home, args.fleet), args.require_approved)
+        return fleet_multi(home, args.require_approved)
 
     paths = find_automations(home)
     if args.strict:
