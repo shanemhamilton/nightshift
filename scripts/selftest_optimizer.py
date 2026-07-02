@@ -302,7 +302,10 @@ def check_install_writes_install_info(home: Path) -> Path:
     rc, _ = _quiet(INSTALL.main, ["--home", str(home), "--agents", "codex"])
     check("install_skill.main() copy install exits 0", rc == 0, rc)
 
-    info_path = home / ".codex" / "skills" / "automation-optimizer" / "INSTALL-INFO.json"
+    # The installed dir is named after the skill source folder (repo root name),
+    # which is "automation-optimizer" in dev but "nightshift" in CI (the public
+    # repo checkout) — derive it rather than hardcoding.
+    info_path = (home / ".codex" / "skills" / INSTALL.SKILL_NAME / "INSTALL-INFO.json")
     check("INSTALL-INFO.json created by copy install", info_path.is_file())
     if info_path.is_file():
         info = json.loads(info_path.read_text(encoding="utf-8"))
